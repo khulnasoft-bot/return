@@ -7,6 +7,7 @@ pub mod theme_editor;
 pub mod keybinding_editor;
 pub mod yaml_theme_ui;
 pub mod appearance_settings;
+pub mod indexing_settings; // Import the new module
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingsTab {
@@ -24,6 +25,7 @@ pub enum SettingsTab {
     CloudSync,
     Drive,
     Workflows,
+    Indexing, // Add new tab
     About,
 }
 
@@ -39,6 +41,7 @@ pub enum SettingsMessage {
     KeybindingEditor(keybinding_editor::KeybindingEditorMessage),
     ThemeEditor(theme_editor::ThemeEditorMessage),
     AppearanceSettings(appearance_settings::AppearanceSettingsMessage),
+    IndexingSettings(indexing_settings::IndexingSettingsMessage), // Add new message
     SaveAll,
     CancelAll,
 }
@@ -50,6 +53,7 @@ pub struct SettingsView {
     keybinding_editor: keybinding_editor::KeybindingEditor,
     theme_editor: theme_editor::ThemeEditor,
     appearance_settings: appearance_settings::AppearanceSettings,
+    indexing_settings: indexing_settings::IndexingSettings, // Add new field
     config_manager: Arc<ConfigManager>, // Shared reference to the ConfigManager
 }
 
@@ -61,6 +65,7 @@ impl SettingsView {
 
         let keybindings = config.preferences.keybindings.clone();
         let appearance_prefs = config.preferences.ui.clone();
+        let indexing_prefs = config.preferences.indexing.clone(); // Clone indexing preferences
 
         let mut theme_editor = theme_editor::ThemeEditor::new(config_manager.clone());
         // Load initial state for theme editor
@@ -74,6 +79,7 @@ impl SettingsView {
             keybinding_editor: keybinding_editor::KeybindingEditor::new(keybindings),
             theme_editor,
             appearance_settings: appearance_settings::AppearanceSettings::new(appearance_prefs),
+            indexing_settings: indexing_settings::IndexingSettings::new(indexing_prefs), // Initialize new settings
             config_manager,
         }
     }
@@ -109,6 +115,11 @@ impl SettingsView {
                 self.config.preferences.ui = self.appearance_settings.preferences.clone();
                 Command::none()
             }
+            SettingsMessage::IndexingSettings(msg) => { // Handle new message
+                self.indexing_settings.update(msg);
+                self.config.preferences.indexing = self.indexing_settings.preferences.clone();
+                Command::none()
+            }
             SettingsMessage::SaveAll => {
                 let preferences_to_save = self.config.preferences.clone();
                 let config_manager_clone = self.config_manager.clone();
@@ -128,6 +139,7 @@ impl SettingsView {
                 self.config = AppConfig::load().unwrap_or_default();
                 self.keybinding_editor = keybinding_editor::KeybindingEditor::new(self.config.preferences.keybindings.clone());
                 self.appearance_settings = appearance_settings::AppearanceSettings::new(self.config.preferences.ui.clone());
+                self.indexing_settings = indexing_settings::IndexingSettings::new(self.config.preferences.indexing.clone()); // Reload new settings
                 // Re-initialize theme editor to load its state from disk
                 let config_manager_clone = self.config_manager.clone();
                 let mut theme_editor_reloaded = theme_editor::ThemeEditor::new(config_manager_clone);
@@ -141,7 +153,7 @@ impl SettingsView {
     }
 
     pub fn view(&self) -> Element<SettingsMessage> {
-        let header = text("Application Settings").size(30).color(Color::BLACK);
+        let header = text("Application Settings").size(30).color(Color::WHITE); // Changed to white for dark theme
 
         let sidebar = column![
             self.nav_button(SettingsTab::General, "General"),
@@ -152,6 +164,7 @@ impl SettingsView {
             self.nav_button(SettingsTab::Themes, "Themes"),
             self.nav_button(SettingsTab::Plugins, "Plugins"),
             self.nav_button(SettingsTab::AI, "AI"),
+            self.nav_button(SettingsTab::Indexing, "Indexing"), // Add new nav button
             self.nav_button(SettingsTab::Privacy, "Privacy"),
             self.nav_button(SettingsTab::Performance, "Performance"),
             self.nav_button(SettingsTab::Collaboration, "Collaboration"),
@@ -164,21 +177,22 @@ impl SettingsView {
         .width(Length::Fixed(180.0));
 
         let current_tab_content: Element<SettingsMessage> = match self.selected_tab {
-            SettingsTab::General => text("General Settings Placeholder").size(20).into(),
+            SettingsTab::General => text("General Settings Placeholder").size(20).color(Color::WHITE).into(),
             SettingsTab::Appearance => self.appearance_settings.view().map(SettingsMessage::AppearanceSettings),
-            SettingsTab::Terminal => text("Terminal Settings Placeholder").size(20).into(),
-            SettingsTab::Editor => text("Editor Settings Placeholder").size(20).into(),
+            SettingsTab::Terminal => text("Terminal Settings Placeholder").size(20).color(Color::WHITE).into(),
+            SettingsTab::Editor => text("Editor Settings Placeholder").size(20).color(Color::WHITE).into(),
             SettingsTab::KeyBindings => self.keybinding_editor.view().map(SettingsMessage::KeybindingEditor),
             SettingsTab::Themes => self.theme_editor.view().map(SettingsMessage::ThemeEditor),
-            SettingsTab::Plugins => text("Plugins Settings Placeholder").size(20).into(),
-            SettingsTab::AI => text("AI Settings Placeholder").size(20).into(),
-            SettingsTab::Privacy => text("Privacy Settings Placeholder").size(20).into(),
-            SettingsTab::Performance => text("Performance Settings Placeholder").size(20).into(),
-            SettingsTab::Collaboration => text("Collaboration Settings Placeholder").size(20).into(),
-            SettingsTab::CloudSync => text("Cloud Sync Settings Placeholder").size(20).into(),
-            SettingsTab::Drive => text("Drive Settings Placeholder").size(20).into(),
-            SettingsTab::Workflows => text("Workflows Settings Placeholder").size(20).into(),
-            SettingsTab::About => text("About NeoTerm Placeholder").size(20).into(),
+            SettingsTab::Plugins => text("Plugins Settings Placeholder").size(20).color(Color::WHITE).into(),
+            SettingsTab::AI => text("AI Settings Placeholder").size(20).color(Color::WHITE).into(),
+            SettingsTab::Indexing => self.indexing_settings.view().map(SettingsMessage::IndexingSettings), // Render new settings
+            SettingsTab::Privacy => text("Privacy Settings Placeholder").size(20).color(Color::WHITE).into(),
+            SettingsTab::Performance => text("Performance Settings Placeholder").size(20).color(Color::WHITE).into(),
+            SettingsTab::Collaboration => text("Collaboration Settings Placeholder").size(20).color(Color::WHITE).into(),
+            SettingsTab::CloudSync => text("Cloud Sync Settings Placeholder").size(20).color(Color::WHITE).into(),
+            SettingsTab::Drive => text("Drive Settings Placeholder").size(20).color(Color::WHITE).into(),
+            SettingsTab::Workflows => text("Workflows Settings Placeholder").size(20).color(Color::WHITE).into(),
+            SettingsTab::About => text("About NeoTerm Placeholder").size(20).color(Color::WHITE).into(),
         };
 
         let main_content = scrollable(
@@ -191,8 +205,8 @@ impl SettingsView {
         .width(Length::Fill);
 
         let controls = row![
-            button(text("Save All")).on_press(SettingsMessage::SaveAll).padding(10),
-            button(text("Cancel")).on_press(SettingsMessage::CancelAll).padding(10),
+            button(text("Save All").color(Color::WHITE)).on_press(SettingsMessage::SaveAll).padding(10).style(iced::theme::Button::Primary),
+            button(text("Cancel").color(Color::WHITE)).on_press(SettingsMessage::CancelAll).padding(10).style(iced::theme::Button::Destructive),
         ].spacing(10).align_items(alignment::Horizontal::Right).width(Length::Fill);
 
         column![
@@ -215,9 +229,9 @@ impl SettingsView {
         button(text(label).size(16).color(if is_selected { Color::BLACK } else { Color::WHITE }))
             .on_press(SettingsMessage::TabSelected(tab))
             .style(if is_selected {
-                iced::theme::Button::Primary
+                iced::theme::Button::Primary // Blue background for selected
             } else {
-                iced::theme::Button::Text
+                iced::theme::Button::Text // Transparent background for unselected
             })
             .width(Length::Fill)
             .into()

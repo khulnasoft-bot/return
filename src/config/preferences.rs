@@ -34,6 +34,8 @@ pub struct UserPreferences {
     pub drive: DrivePreferences,
     #[serde(default)]
     pub workflows: WorkflowPreferences,
+    #[serde(default)]
+    pub indexing: IndexingPreferences, // Add IndexingPreferences
 }
 
 impl Default for UserPreferences {
@@ -51,6 +53,7 @@ impl Default for UserPreferences {
             cloud_sync: CloudSyncPreferences::default(),
             drive: DrivePreferences::default(),
             workflows: WorkflowPreferences::default(),
+            indexing: IndexingPreferences::default(), // Default for IndexingPreferences
         }
     }
 }
@@ -458,6 +461,27 @@ impl Default for WorkflowPreferences {
 fn default_enable_workflow_suggestions() -> bool { true }
 fn default_workflow_storage_path() -> String { "workflows".to_string() }
 
+// New struct for Indexing Preferences
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct IndexingPreferences {
+    #[serde(default = "default_index_new_folders_by_default")]
+    pub index_new_folders_by_default: bool,
+    // You might add a list of indexed folders here if they are persistent
+    // pub indexed_folders: Vec<String>,
+}
+
+impl Default for IndexingPreferences {
+    fn default() -> Self {
+        Self {
+            index_new_folders_by_default: default_index_new_folders_by_default(),
+            // indexed_folders: Vec::new(),
+        }
+    }
+}
+
+fn default_index_new_folders_by_default() -> bool { true }
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -490,16 +514,19 @@ mod tests {
         let mut prefs = UserPreferences::load().await.unwrap();
         assert_eq!(prefs.general.font_size, 14);
         assert_eq!(prefs.ui.theme_name, "nord");
+        assert_eq!(prefs.indexing.index_new_folders_by_default, true); // Test new field
 
         // Modify and save
         prefs.general.font_size = 16;
         prefs.ui.theme_name = "dark_mode".to_string();
+        prefs.indexing.index_new_folders_by_default = false; // Modify new field
         prefs.save().await.unwrap();
 
         // Load again and verify changes
         let loaded_prefs = UserPreferences::load().await.unwrap();
         assert_eq!(loaded_prefs.general.font_size, 16);
         assert_eq!(loaded_prefs.ui.theme_name, "dark_mode");
+        assert_eq!(loaded_prefs.indexing.index_new_folders_by_default, false); // Verify new field
 
         cleanup_test_env(test_dir).await;
     }
@@ -518,6 +545,7 @@ mod tests {
         assert_eq!(prefs.cloud_sync.sync_interval_minutes, 60);
         assert_eq!(prefs.drive.enable_drive_integration, false);
         assert_eq!(prefs.workflows.enable_workflow_suggestions, true);
+        assert_eq!(prefs.indexing.index_new_folders_by_default, true); // Test new field default
     }
 
     #[tokio::test]
