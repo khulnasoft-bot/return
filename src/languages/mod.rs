@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use anyhow::Result;
 use tree_sitter::{Language, Parser};
-// use syntect::{highlighting::Highlighter, parsing::SyntaxSet};
+use syntect::{highlighting::Highlighter, parsing::SyntaxSet};
 
 /// Represents a programming language supported by NeoTerm.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,8 +41,7 @@ impl Default for CommentSyntax {
 pub struct LanguageManager {
     parsers: Arc<Mutex<HashMap<String, Parser>>>,
     languages: HashMap<String, Language>, // Keyed by language name
-    // Add Syntect theme set and syntax set for highlighting
-    syntax_set: Arc<Mutex<syntect::parsing::SyntaxSet>>,
+    syntax_set: Arc<Mutex<SyntaxSet>>,
     theme_set: Arc<Mutex<syntect::highlighting::ThemeSet>>,
 }
 
@@ -51,7 +50,7 @@ impl LanguageManager {
         Self {
             parsers: Arc::new(Mutex::new(HashMap::new())),
             languages: HashMap::new(),
-            syntax_set: Arc::new(Mutex::new(syntect::parsing::SyntaxSet::load_defaults_newlines())),
+            syntax_set: Arc::new(Mutex::new(SyntaxSet::load_defaults_newlines())),
             theme_set: Arc::new(Mutex::new(syntect::highlighting::ThemeSet::load_defaults())),
         }
     }

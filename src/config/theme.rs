@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use log::info;
-use iced::Color;
+use iced::{Color, Theme as IcedTheme};
 
 /// Represents a complete theme for the application.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Theme {
+pub struct YamlTheme {
     pub name: String,
     pub background: Color,
     pub foreground: Color,
@@ -44,7 +44,7 @@ pub struct TerminalColors {
     pub bright_white: Color,
 }
 
-impl Default for Theme {
+impl Default for YamlTheme {
     fn default() -> Self {
         // A simple light theme as default
         Self {
@@ -90,6 +90,25 @@ impl Default for TerminalColors {
     }
 }
 
+/// Represents a simplified theme structure for Iced GUI.
+/// This struct acts as an intermediary to convert `YamlTheme` into `iced::Theme`.
+#[derive(Debug, Clone)]
+pub struct Theme {
+    pub name: String,
+    pub iced_theme: IcedTheme,
+    // Add other theme-related properties here if needed, e.g., terminal colors
+    // pub terminal_colors: HashMap<String, Color>,
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self {
+            name: "default".to_string(),
+            iced_theme: IcedTheme::Light, // Or any other default Iced theme
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,11 +116,8 @@ mod tests {
     #[test]
     fn test_default_theme() {
         let theme = Theme::default();
-        assert_eq!(theme.name, "Default Light");
-        assert_eq!(theme.background, Color::from_rgb(0.95, 0.95, 0.95));
-        assert_eq!(theme.foreground, Color::BLACK);
-        assert_eq!(theme.terminal_colors.black, Color::from_rgb(0.0, 0.0, 0.0));
-        assert_eq!(theme.terminal_colors.bright_white, Color::from_rgb(1.0, 1.0, 1.0));
+        assert_eq!(theme.name, "default");
+        assert_eq!(theme.iced_theme, IcedTheme::Light);
     }
 
     #[test]

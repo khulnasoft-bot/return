@@ -43,6 +43,7 @@ mod settings;
 mod shell;
 mod string_offset;
 mod sum_tree;
+mod syntax_tree;
 mod ui;
 mod virtual_fs;
 mod watcher;
@@ -52,7 +53,7 @@ mod workflows;
 // Use statements for key components
 use ai::assistant::Assistant;
 use ai::context::AIContext; // Import AIContext
-use agent_mode_eval::{AgentConfig, AgentMode};
+use agent_mode_eval::{AgentConfig, AgentMessage, AgentMode};
 use cli::{Cli, CliCommand};
 use command::CommandManager;
 use config::ConfigManager;
@@ -64,7 +65,7 @@ use workflows::manager::WorkflowManager;
 use block::{Block, BlockContent};
 use shell::ShellManager;
 use input::{EnhancedTextInput, Message as InputMessage, HistoryDirection, Direction};
-use config::{AppConfig, ConfigManager as IcedConfigManager, preferences::UserPreferences};
+use config::{AppConfig, preferences::UserPreferences};
 use crate::{
     ui::command_palette::{CommandPalette, CommandAction},
     ui::ai_sidebar::AISidebar,
@@ -74,9 +75,9 @@ use crate::{
     collaboration::session_sharing::SessionSharingManager as IcedSessionSharingManager,
     cloud::sync_manager::{CloudSyncManager as SyncManager, SyncEvent, SyncConfig},
     performance::benchmarks::{PerformanceBenchmarks, BenchmarkSuite, BenchmarkResult},
-    cli::{Cli as IcedCli, Commands, ConfigCommands, AiCommands, PluginCommands, WorkflowCommands},
+    cli::{Commands, ConfigCommands, AiCommands, PluginCommands, WorkflowCommands},
 };
-use command::{CommandManager as IcedCommandManager, CommandEvent};
+use command::{CommandEvent};
 use drive::{DriveManager, DriveConfig, DriveEvent};
 use fuzzy_match::FuzzyMatchManager;
 use graphql::build_schema;
@@ -123,13 +124,14 @@ pub struct NeoTerm {
    workflow_event_rx: mpsc::Receiver<WorkflowExecutionEvent>,
 
    // Managers (Arc'd for sharing)
-   config_manager: Arc<IcedConfigManager>,
+   config_manager: Arc<ConfigManager>,
    ai_assistant: Arc<RwLock<Assistant>>,
+   ai_context: Arc<RwLock<AIContext>>, // Add AIContext
    workflow_manager: Arc<IcedWorkflowManager>,
    plugin_manager: Arc<IcedPluginManager>,
    sync_manager: Arc<SyncManager>,
    collaboration_manager: Arc<IcedSessionSharingManager>,
-   command_manager: Arc<IcedCommandManager>,
+   command_manager: Arc<CommandManager>,
    drive_manager: Arc<DriveManager>,
    fuzzy_match_manager: Arc<FuzzyMatchManager>,
    graphql_schema: Arc<graphql::AppSchema>,
@@ -185,23 +187,6 @@ pub enum Message {
    // Workflow messages
    WorkflowExecutionEvent(WorkflowExecutionEvent),
    UserResponseToAgentPrompt(String, String),
-}
-
-#[derive(Debug, Clone)]
-pub enum BlockMessage {
-    Copy,
-    Rerun,
-    Delete,
-    Export,
-    ToggleCollapse,
-    SendToAI,
-    SuggestFix,
-    ExplainOutput,
-    AcceptWorkflow,
-    RejectWorkflow,
-    AgentPromptInputChanged(String),
-    SubmitAgentPrompt,
-    FetchUsageQuota,
 }
 
 #[derive(Debug, Clone)]
@@ -265,12 +250,38 @@ impl Application for NeoTerm {
         let sync_manager = Arc::new(SyncManager::new(Default::default(), mpsc::channel(100).0)); // Dummy sender for sync events
         let wasm_server = Arc::new(WasmServer::new());
 
-        // Initialize AI Assistant
+        // Initialize AI Context
+        let ai_context = Arc::new(RwLock::new(AIContext::new(
+            virtual_file_system.clone(),
+            command_manager.clone(),
+            watcher.clone(),
+            resource_manager.clone(),
+            plugin_manager.clone(),
+            shell_manager.clone(),
+            drive_manager.clone(),
+            websocket_server.clone(),
+            lpc_engine.clone(),
+            mcq_manager.clone(),
+            natural_language_detector.clone(),
+            syntax_tree_manager.clone(),
+            string_offset_manager.clone(),
+            sum_tree_manager.clone(),
+            fuzzy_match_manager.clone(),
+            markdown_parser.clone(),
+            language_manager.clone(),
+            settings_manager.clone(),
+            collaboration_manager.clone(),
+            sync_manager.clone(),
+            wasm_server.clone(),
+        )));
+
+        // Initialize AI Assistant with AIContext
         let ai_assistant = Arc::new(RwLock::new(tokio::runtime::Handle::current().block_on(async {
             Assistant::new(
                 command_manager.clone(),
                 virtual_file_system.clone(),
                 watcher.clone(),
+                ai_context.clone(), // Pass AIContext here
                 &preferences.ai_provider_type,
                 preferences.ai_api_key.clone(),
                 preferences.ai_model.clone(),
@@ -282,7 +293,7 @@ impl Application for NeoTerm {
             ).expect("Failed to initialize AI Assistant")
         })));
 
-        // Initialize AgentMode with the assistant
+        // Initialize AgentMode with the assistant and AIContext
         let agent_config = {
             let mut cfg = AgentConfig::default();
             if let Some(api_key) = std::env::var("OPENAI_API_KEY").ok() {
@@ -290,7 +301,7 @@ impl Application for NeoTerm {
             }
             cfg
         };
-        let agent_mode = Arc::new(RwLock::new(AgentMode::new(agent_config, ai_assistant.clone()).expect("Failed to initialize AgentMode")));
+        let agent_mode = Arc::new(RwLock::new(AgentMode::new(agent_config, ai_assistant.clone(), ai_context.clone()).expect("Failed to initialize AgentMode")));
 
         // Start the API server (if enabled in preferences)
         if preferences.enable_graphql_api {
@@ -346,6 +357,7 @@ impl Application for NeoTerm {
             workflow_event_rx,
             config_manager,
             ai_assistant,
+            ai_context, // Assign AIContext
             workflow_manager: Arc::new(WorkflowManager::new()), // Initialized here
             plugin_manager,
             sync_manager,
@@ -1346,18 +1358,18 @@ async fn main() -> Result<()> {
             let config_manager = Arc::new(ConfigManager::new().await?);
             match action {
                 cli::ConfigCommands::Show => {
-                    let prefs = config_manager.get_preferences().await;
+                    let prefs = config_manager.get_preferences().read().await.clone();
                     println!("Current Preferences:\n{:#?}", prefs);
                     let current_theme = config_manager.get_current_theme().await?;
                     println!("\nCurrent Theme: {}", current_theme.name);
                 }
                 cli::ConfigCommands::Set { key, value } => {
-                    let mut prefs = config_manager.get_preferences().await;
+                    let mut prefs = config_manager.get_preferences().write().await;
                     // This is a simplified example; a real implementation would use reflection or a match statement
                     // to update specific fields based on `key`.
                     println!("Attempting to set {} = {} (Not fully implemented)", key, value);
                     // Example: if key == "terminal_font_size" { prefs.terminal_font_size = value.parse()?; }
-                    config_manager.update_preferences(prefs).await?;
+                    config_manager.update_preferences(prefs.clone()).await?;
                     println!("Configuration updated (simulated).");
                 }
                 cli::ConfigCommands::Edit => {
@@ -1373,10 +1385,35 @@ async fn main() -> Result<()> {
             let watcher_dummy = Arc::new(Watcher::new(mpsc::channel(1).0));
             let preferences = UserPreferences::load().await?;
 
+            let ai_context_dummy = Arc::new(RwLock::new(AIContext::new(
+                virtual_file_system_dummy.clone(),
+                command_manager_dummy.clone(),
+                watcher_dummy.clone(),
+                Arc::new(ResourceManager::new()),
+                Arc::new(PluginManager::new(mpsc::unbounded_channel().0)),
+                Arc::new(ShellManager::new()),
+                Arc::new(DriveManager::new(Default::default(), mpsc::channel(1).0)),
+                Arc::new(WebSocketServer::new()),
+                Arc::new(LpcEngine::new(mpsc::channel(1).0)),
+                Arc::new(McqManager::new()),
+                Arc::new(NaturalLanguageDetector::new()),
+                Arc::new(SyntaxTreeManager::new()),
+                Arc::new(StringOffsetManager::new()),
+                Arc::new(SumTreeManager::new()),
+                Arc::new(FuzzyMatchManager::new()),
+                Arc::new(MarkdownParser::new()),
+                Arc::new(LanguageManager::new()),
+                Arc::new(SettingsManager::new(Arc::new(ConfigManager::new().await.unwrap()))), // Dummy ConfigManager for SettingsManager
+                Arc::new(SessionSharingManager::new(mpsc::channel(1).0)),
+                Arc::new(SyncManager::new(Default::default(), mpsc::channel(1).0)),
+                Arc::new(WasmServer::new()),
+            )));
+
             let assistant = Arc::new(RwLock::new(Assistant::new(
                 command_manager_dummy.clone(),
                 virtual_file_system_dummy.clone(),
                 watcher_dummy.clone(),
+                ai_context_dummy.clone(), // Pass AIContext
                 &preferences.ai_provider_type,
                 preferences.ai_api_key.clone(),
                 preferences.ai_model.clone(),
@@ -1498,17 +1535,42 @@ async fn main() -> Result<()> {
             let fuzzy_match_manager_dummy = Arc::new(FuzzyMatchManager::new());
             let markdown_parser_dummy = Arc::new(MarkdownParser::new());
             let language_manager_dummy = Arc::new(LanguageManager::new());
-            let config_manager_dummy = Arc::new(ConfigManager::new().await?;
+            let config_manager_dummy = Arc::new(ConfigManager::new().await?);
             let settings_manager_dummy = Arc::new(SettingsManager::new(config_manager_dummy.clone()));
             let collaboration_manager_dummy = Arc::new(SessionSharingManager::new(mpsc::channel(1).0));
             let sync_manager_dummy = Arc::new(SyncManager::new(Default::default(), mpsc::channel(1).0));
             let wasm_server_dummy = Arc::new(WasmServer::new());
+
+            let ai_context_dummy = Arc::new(RwLock::new(AIContext::new(
+                virtual_file_system_dummy.clone(),
+                command_manager_dummy.clone(),
+                watcher_dummy.clone(),
+                resource_manager_dummy.clone(),
+                plugin_manager_dummy.clone(),
+                shell_manager_dummy.clone(),
+                drive_manager_dummy.clone(),
+                websocket_server_dummy.clone(),
+                lpc_engine_dummy.clone(),
+                mcq_manager_dummy.clone(),
+                natural_language_detector_dummy.clone(),
+                syntax_tree_manager_dummy.clone(),
+                string_offset_manager_dummy.clone(),
+                sum_tree_manager_dummy.clone(),
+                fuzzy_match_manager_dummy.clone(),
+                markdown_parser_dummy.clone(),
+                language_manager_dummy.clone(),
+                settings_manager_dummy.clone(),
+                collaboration_manager_dummy.clone(),
+                sync_manager_dummy.clone(),
+                wasm_server_dummy.clone(),
+            )));
 
             let preferences = UserPreferences::load().await?;
             let ai_assistant_dummy = Arc::new(RwLock::new(Assistant::new(
                 command_manager_dummy.clone(),
                 virtual_file_system_dummy.clone(),
                 watcher_dummy.clone(),
+                ai_context_dummy.clone(), // Pass AIContext
                 &preferences.ai_provider_type,
                 preferences.ai_api_key.clone(),
                 preferences.ai_model.clone(),
@@ -1525,7 +1587,7 @@ async fn main() -> Result<()> {
                 }
                 cfg
             };
-            let agent_mode_dummy = Arc::new(RwLock::new(AgentMode::new(agent_config, ai_assistant_dummy.clone())?));
+            let agent_mode_dummy = Arc::new(RwLock::new(AgentMode::new(agent_config, ai_assistant_dummy.clone(), ai_context_dummy.clone())?));
 
             let executor = WorkflowExecutor::new(
                 command_manager_dummy,

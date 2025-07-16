@@ -1,217 +1,105 @@
 use iced::{
     widget::{column, row, text, button, text_input, scrollable},
-    Element, Length, Color, alignment,
+    Element, Length, Color, alignment, Command,
 };
 use std::collections::HashMap;
-use crate::config::preferences::{KeyBindings, KeyBinding, Modifier, Action};
+use crate::config::preferences::KeybindingPreferences;
 use log::info;
 
 #[derive(Debug, Clone)]
 pub enum KeybindingEditorMessage {
+    BindingChanged(String, String), // (action, new_key_combination)
     AddBinding,
-    RemoveBinding(String), // Keybinding ID
-    KeyInputChanged(String, String), // (Keybinding ID, new key input)
-    ModifierToggled(String, Modifier), // (Keybinding ID, Modifier)
-    ActionSelected(String, Action), // (Keybinding ID, Action)
-    WhenInputChanged(String, String), // (Keybinding ID, new when input)
+    RemoveBinding(String), // (action)
     Save,
     Cancel,
+    Error(String),
 }
 
 #[derive(Debug, Clone)]
 pub struct KeybindingEditor {
-    keybindings: KeyBindings,
-    // Temporary state for new/edited binding
-    new_binding_id: String,
-    new_binding_key: String,
-    new_binding_modifiers: Vec<Modifier>,
-    new_binding_action: Action,
-    new_binding_when: String,
+    pub keybindings: KeybindingPreferences,
+    original_keybindings: KeybindingPreferences, // To allow reverting changes
+    error_message: Option<String>,
 }
 
 impl KeybindingEditor {
-    pub fn new(keybindings: KeyBindings) -> Self {
+    pub fn new(keybindings: KeybindingPreferences) -> Self {
         Self {
-            keybindings,
-            new_binding_id: String::new(),
-            new_binding_key: String::new(),
-            new_binding_modifiers: Vec::new(),
-            new_binding_action: Action::Command("".to_string()), // Default action
-            new_binding_when: String::new(),
+            keybindings: keybindings.clone(),
+            original_keybindings: keybindings,
+            error_message: None,
         }
     }
 
-    pub fn update(&mut self, message: KeybindingEditorMessage) {
+    pub fn update(&mut self, message: KeybindingEditorMessage) -> Command<KeybindingEditorMessage> {
+        self.error_message = None; // Clear previous errors
         match message {
+            KeybindingEditorMessage::BindingChanged(action, new_key_combination) => {
+                self.keybindings.bindings.insert(action, new_key_combination);
+            }
             KeybindingEditorMessage::AddBinding => {
-                let id = format!("custom_binding_{}", self.keybindings.bindings.len());
-                let new_binding = KeyBinding {
-                    key: self.new_binding_key.clone(),
-                    modifiers: self.new_binding_modifiers.clone(),
-                    action: self.new_binding_action.clone(),
-                    when: if self.new_binding_when.is_empty() { None } else { Some(self.new_binding_when.clone()) },
-                };
-                self.keybindings.bindings.insert(id.clone(), new_binding);
-                info!("Added new keybinding: {}", id);
-                // Reset new binding fields
-                self.new_binding_id.clear();
-                self.new_binding_key.clear();
-                self.new_binding_modifiers.clear();
-                self.new_binding_action = Action::Command("".to_string());
-                self.new_binding_when.clear();
+                let new_action_key = format!("new_action_{}", uuid::Uuid::new_v4().to_string()[..4].to_string());
+                self.keybindings.bindings.insert(new_action_key, "".to_string());
             }
-            KeybindingEditorMessage::RemoveBinding(id) => {
-                self.keybindings.bindings.remove(&id);
-                info!("Removed keybinding: {}", id);
-            }
-            KeybindingEditorMessage::KeyInputChanged(id, new_key) => {
-                if id == self.new_binding_id {
-                    self.new_binding_key = new_key;
-                } else if let Some(binding) = self.keybindings.bindings.get_mut(&id) {
-                    binding.key = new_key;
-                }
-            }
-            KeybindingEditorMessage::ModifierToggled(id, modifier) => {
-                let modifiers_list = if id == self.new_binding_id {
-                    &mut self.new_binding_modifiers
-                } else if let Some(binding) = self.keybindings.bindings.get_mut(&id) {
-                    &mut binding.modifiers
-                } else {
-                    return;
-                };
-
-                if modifiers_list.contains(&modifier) {
-                    modifiers_list.retain(|&m| m != modifier);
-                } else {
-                    modifiers_list.push(modifier);
-                }
-            }
-            KeybindingEditorMessage::ActionSelected(id, action) => {
-                if id == self.new_binding_id {
-                    self.new_binding_action = action;
-                } else if let Some(binding) = self.keybindings.bindings.get_mut(&id) {
-                    binding.action = action;
-                }
-            }
-            KeybindingEditorMessage::WhenInputChanged(id, new_when) => {
-                if id == self.new_binding_id {
-                    self.new_binding_when = new_when;
-                } else if let Some(binding) = self.keybindings.bindings.get_mut(&id) {
-                    binding.when = if new_when.is_empty() { None } else { Some(new_when) };
-                }
+            KeybindingEditorMessage::RemoveBinding(action) => {
+                self.keybindings.bindings.remove(&action);
             }
             KeybindingEditorMessage::Save => {
-                info!("Keybindings saved (mock).");
-                // In a real app, you'd persist self.keybindings
+                self.original_keybindings = self.keybindings.clone();
+                info!("Keybindings saved (mock). In a real app, this would persist.");
+                // In a real app, you'd trigger a save via ConfigManager here
             }
             KeybindingEditorMessage::Cancel => {
-                info!("Keybinding changes cancelled (mock).");
-                // In a real app, you'd revert changes or reload original
+                self.keybindings = self.original_keybindings.clone();
+                info!("Keybinding changes cancelled.");
+            }
+            KeybindingEditorMessage::Error(msg) => {
+                self.error_message = Some(msg);
             }
         }
+        Command::none()
     }
 
     pub fn view(&self) -> Element<KeybindingEditorMessage> {
         let header = text("Keybinding Editor").size(24).color(Color::BLACK);
 
-        let new_binding_section = column![
-            text("Add New Keybinding").size(18),
-            row![
-                text_input("Key (e.g., 'a', 'Enter', 'F1')", &self.new_binding_key)
-                    .on_input(|s| KeybindingEditorMessage::KeyInputChanged(self.new_binding_id.clone(), s))
-                    .width(Length::FillPortion(0.3)),
+        let keybinding_fields: Vec<Element<KeybindingEditorMessage>> = self.keybindings.bindings.iter()
+            .map(|(action, key_combination)| {
                 row![
-                    Self::modifier_button(Modifier::Ctrl, &self.new_binding_modifiers, self.new_binding_id.clone()),
-                    Self::modifier_button(Modifier::Alt, &self.new_binding_modifiers, self.new_binding_id.clone()),
-                    Self::modifier_button(Modifier::Shift, &self.new_binding_modifiers, self.new_binding_id.clone()),
-                    Self::modifier_button(Modifier::Super, &self.new_binding_modifiers, self.new_binding_id.clone()),
-                ].spacing(5).width(Length::FillPortion(0.4)),
-                Self::action_dropdown(&self.new_binding_action, self.new_binding_id.clone()),
-                text_input("When (optional context)", &self.new_binding_when)
-                    .on_input(|s| KeybindingEditorMessage::WhenInputChanged(self.new_binding_id.clone(), s))
-                    .width(Length::FillPortion(0.2)),
-                button(text("Add"))
-                    .on_press(KeybindingEditorMessage::AddBinding)
-                    .padding(8)
-            ].spacing(10).align_items(alignment::Horizontal::Center),
-        ].spacing(10);
-
-        let existing_bindings: Vec<Element<KeybindingEditorMessage>> = self.keybindings.bindings.iter()
-            .map(|(id, binding)| {
-                row![
-                    text_input("", &binding.key)
-                        .on_input(|s| KeybindingEditorMessage::KeyInputChanged(id.clone(), s))
-                        .width(Length::FillPortion(0.2)),
-                    row![
-                        Self::modifier_button(Modifier::Ctrl, &binding.modifiers, id.clone()),
-                        Self::modifier_button(Modifier::Alt, &binding.modifiers, id.clone()),
-                        Self::modifier_button(Modifier::Shift, &binding.modifiers, id.clone()),
-                        Self::modifier_button(Modifier::Super, &binding.modifiers, id.clone()),
-                    ].spacing(5).width(Length::FillPortion(0.3)),
-                    Self::action_dropdown(&binding.action, id.clone()),
-                    text_input("", binding.when.as_deref().unwrap_or(""))
-                        .on_input(|s| KeybindingEditorMessage::WhenInputChanged(id.clone(), s))
-                        .width(Length::FillPortion(0.2)),
-                    button(text("Remove"))
-                        .on_press(KeybindingEditorMessage::RemoveBinding(id.clone()))
+                    text(action).width(Length::Fixed(150.0)),
+                    text_input("Key Combination", key_combination)
+                        .on_input(move |s| KeybindingEditorMessage::BindingChanged(action.clone(), s))
+                        .width(Length::Fill),
+                    button(text("X"))
+                        .on_press(KeybindingEditorMessage::RemoveBinding(action.clone()))
                         .padding(5)
                 ].spacing(10).align_items(alignment::Horizontal::Center).into()
             })
             .collect();
 
+        let error_display = if let Some(msg) = &self.error_message {
+            text(msg).color(Color::RED).size(14).into()
+        } else {
+            column![].into()
+        };
+
         let controls = row![
+            button(text("Add New Binding")).on_press(KeybindingEditorMessage::AddBinding).padding(10),
             button(text("Save")).on_press(KeybindingEditorMessage::Save).padding(10),
             button(text("Cancel")).on_press(KeybindingEditorMessage::Cancel).padding(10),
         ].spacing(10);
 
-        column![
-            header,
-            new_binding_section,
-            scrollable(column(existing_bindings).spacing(5)).height(Length::Fill),
-            controls,
-        ]
-        .spacing(20)
-        .padding(20)
-        .into()
-    }
-
-    fn modifier_button(modifier: Modifier, active_modifiers: &[Modifier], id: String) -> Element<'static, KeybindingEditorMessage> {
-        let is_active = active_modifiers.contains(&modifier);
-        let text_str = format!("{:?}", modifier);
-        button(text(text_str).size(14))
-            .on_press(KeybindingEditorMessage::ModifierToggled(id, modifier))
-            .style(if is_active {
-                iced::widget::button::primary::Style::Primary
-            } else {
-                iced::widget::button::text::Style::Text
-            })
-            .padding(5)
-            .into()
-    }
-
-    fn action_dropdown(current_action: &Action, id: String) -> Element<'static, KeybindingEditorMessage> {
-        let actions = vec![
-            Action::NewTab, Action::CloseTab, Action::NextTab, Action::PreviousTab,
-            Action::SplitHorizontal, Action::SplitVertical, Action::CloseSplit,
-            Action::Copy, Action::Paste, Action::Cut, Action::SelectAll,
-            Action::Find, Action::FindNext, Action::FindPrevious,
-            Action::ScrollUp, Action::ScrollDown, Action::ScrollToTop, Action::ScrollToBottom,
-            Action::ToggleFullscreen, Action::ToggleSettings, Action::Quit,
-            Action::Command("".to_string()), // Placeholder for custom command
-        ];
-
-        let current_action_text = match current_action {
-            Action::Command(cmd) => format!("Command: {}", cmd),
-            _ => format!("{:?}", current_action),
-        };
-
-        iced::widget::pick_list(
-            actions,
-            Some(current_action.clone()),
-            move |action| KeybindingEditorMessage::ActionSelected(id.clone(), action),
+        scrollable(
+            column![
+                header,
+                column(keybinding_fields).spacing(5),
+                error_display,
+                controls,
+            ]
+            .spacing(20)
+            .padding(20)
         )
-        .placeholder(&current_action_text)
-        .width(Length::FillPortion(0.3))
         .into()
     }
 }

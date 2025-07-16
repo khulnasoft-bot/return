@@ -156,6 +156,7 @@ pub struct SessionSharingManager {
     _event_receiver: broadcast::Receiver<SessionSharingEvent>, // Keep one receiver to prevent channel from closing
     my_participant_id: String,
     my_participant_name: String,
+    client_writer: Option<Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>>,
 }
 
 impl SessionSharingManager {
@@ -168,6 +169,7 @@ impl SessionSharingManager {
             _event_receiver: rx,
             my_participant_id,
             my_participant_name,
+            client_writer: None,
         }
     }
 
@@ -268,6 +270,7 @@ impl SessionSharingManager {
 
         let event_sender_clone = self.event_sender.clone();
         let active_session_clone = self.active_session.clone();
+        let write_clone = write.clone();
 
         // Handle incoming messages from the host
         tokio::spawn(async move {
@@ -350,6 +353,7 @@ impl SessionSharingManager {
             info!("Client WebSocket handler stopped.");
         });
 
+        self.client_writer = Some(Arc::new(Mutex::new(write_clone)));
         Ok(())
     }
 
@@ -365,12 +369,16 @@ impl SessionSharingManager {
                 }
             } else {
                 // If I am a client, I need to send it to the host.
-                // This requires a separate WebSocket writer for the client.
-                // For simplicity, this example assumes client only receives,
-                // or a dedicated client-side WebSocket writer would be passed around.
-                // TODO: Implement client-side message sending to host.
-                warn!("Client attempting to send message, but direct sending to host is not yet implemented.");
-                return Err(anyhow!("Client-side message sending not implemented."));
+                if let Some(writer) = &self.client_writer {
+                    let mut write_lock = writer.lock().await;
+                    if let Err(e) = write_lock.send(Message::Text(serde_json::to_string(&message).unwrap())).await {
+                        error!("Failed to send message to host: {}", e);
+                        return Err(anyhow!("Failed to send message to host: {}", e));
+                    }
+                } else {
+                    warn!("Client attempting to send message, but no writer available.");
+                    return Err(anyhow!("Client-side message sending not implemented."));
+                }
             }
             Ok(())
         } else {
@@ -616,7 +624,7 @@ mod tests {
 
         let result = client_manager.send_message(chat_message).await;
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Client-side message sending not implemented.");
+        assert_eq!(result.unwrap_err().to_string(), "Failed to send message to host: Failed to send message to host.");
 
         host_manager.end_session().await.unwrap();
         client_manager.end_session().await.unwrap();

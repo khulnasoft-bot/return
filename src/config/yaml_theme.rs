@@ -1,7 +1,19 @@
-use anyhow::{anyhow, Result};
-use iced::Color;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use anyhow::{Result, anyhow};
+use log::{warn, error};
+use iced::Color;
+
+/// Represents a color value in various formats.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum ColorValue {
+    Hex(String),
+    Rgb(u8, u8, u8),
+    Rgba(u8, u8, u8, f32),
+    Hsl(f32, f32, f32),
+    Named(String),
+}
 
 /// Represents a theme defined in a YAML file.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -9,62 +21,92 @@ pub struct YamlTheme {
     pub name: String,
     pub description: Option<String>,
     pub author: Option<String>,
+    #[serde(default)]
     pub colors: HashMap<String, String>, // Color name -> color value (e.g., "#RRGGBB", "rgb(r,g,b)")
-    pub terminal_colors: Option<HashMap<String, String>>, // ANSI color name -> color value
+    #[serde(default)]
+    pub syntax_highlighting: HashMap<String, String>, // For code highlighting
+    #[serde(default)]
+    pub ui_elements: HashMap<String, String>, // For specific UI components
+    #[serde(default)]
+    pub terminal_colors: HashMap<String, String>, // ANSI color name -> color value
+}
+
+impl Default for YamlTheme {
+    fn default() -> Self {
+        let mut colors = HashMap::new();
+        colors.insert("background".to_string(), "#282828".to_string());
+        colors.insert("foreground".to_string(), "#ebdbb2".to_string());
+        colors.insert("primary".to_string(), "#83a598".to_string());
+        colors.insert("success".to_string(), "#b8bb26".to_string());
+        colors.insert("danger".to_string(), "#fb4934".to_string());
+
+        let mut terminal_colors = HashMap::new();
+        terminal_colors.insert("black".to_string(), "#282828".to_string());
+        terminal_colors.insert("red".to_string(), "#cc241d".to_string());
+        terminal_colors.insert("green".to_string(), "#98971a".to_string());
+        terminal_colors.insert("yellow".to_string(), "#d79921".to_string());
+        terminal_colors.insert("blue".to_string(), "#458588".to_string());
+        terminal_colors.insert("magenta".to_string(), "#b16286".to_string());
+        terminal_colors.insert("cyan".to_string(), "#689d6a".to_string());
+        terminal_colors.insert("white".to_string(), "#a89984".to_string());
+        terminal_colors.insert("bright_black".to_string(), "#928374".to_string());
+        terminal_colors.insert("bright_red".to_string(), "#fb4934".to_string());
+        terminal_colors.insert("bright_green".to_string(), "#b8bb26".to_string());
+        terminal_colors.insert("bright_yellow".to_string(), "#fabd2f".to_string());
+        terminal_colors.insert("bright_blue".to_string(), "#83a598".to_string());
+        terminal_colors.insert("bright_magenta".to_string(), "#d3869b".to_string());
+        terminal_colors.insert("bright_cyan".to_string(), "#8ec07c".to_string());
+        terminal_colors.insert("bright_white".to_string(), "#ebdbb2".to_string());
+        terminal_colors.insert("cursor".to_string(), "#ebdbb2".to_string());
+        terminal_colors.insert("selection".to_string(), "#504945".to_string());
+
+
+        Self {
+            name: "Default Theme".to_string(),
+            description: Some("A default dark theme.".to_string()),
+            author: Some("NeoTerm".to_string()),
+            colors,
+            syntax_highlighting: HashMap::new(), // Default empty
+            ui_elements: HashMap::new(), // Default empty
+            terminal_colors,
+        }
+    }
 }
 
 impl YamlTheme {
-    /// Converts a `YamlTheme` into an `iced::Theme::Custom` instance.
+    /// Converts the `YamlTheme` into an `iced::Theme::Custom`.
     pub fn to_iced_theme(&self) -> iced::Theme {
-        let mut palette = iced::theme::Palette::default();
+        let mut palette = iced::theme::Palette {
+            background: parse_color(self.colors.get("background").unwrap_or(&"#000000".to_string())).unwrap_or(Color::BLACK),
+            text: parse_color(self.colors.get("foreground").unwrap_or(&"#FFFFFF".to_string())).unwrap_or(Color::WHITE),
+            primary: parse_color(self.colors.get("primary").unwrap_or(&"#83a598".to_string())).unwrap_or(Color::from_rgb(0.5, 0.5, 0.5)),
+            success: parse_color(self.colors.get("success").unwrap_or(&"#b8bb26".to_string())).unwrap_or(Color::from_rgb(0.0, 1.0, 0.0)),
+            danger: parse_color(self.colors.get("danger").unwrap_or(&"#fb4934".to_string())).unwrap_or(Color::from_rgb(1.0, 0.0, 0.0)),
+        };
 
-        // Parse main colors
-        if let Some(bg) = self.colors.get("background") {
-            if let Ok(color) = parse_color(bg) {
-                palette.background = color;
-            }
-        }
-        if let Some(fg) = self.colors.get("foreground") {
-            if let Ok(color) = parse_color(fg) {
-                palette.text = color;
-            }
-        }
-        if let Some(primary) = self.colors.get("primary") {
-            if let Ok(color) = parse_color(primary) {
-                palette.primary = color;
-            }
-        }
-        if let Some(success) = self.colors.get("success") {
-            if let Ok(color) = parse_color(success) {
-                palette.success = color;
-            }
-        }
-        if let Some(danger) = self.colors.get("danger") {
-            if let Ok(color) = parse_color(danger) {
-                palette.danger = color;
-            }
-        }
+        // You can extend this to map more specific colors to iced's palette or custom styles
+        // For example, mapping terminal_colors to specific UI elements if needed.
 
-        // Iced's custom theme only allows setting a palette.
-        // For more granular control (like terminal colors), you'd need to
-        // implement custom style sheets that consume these colors.
         iced::Theme::Custom(Box::new(iced::theme::Custom::new(palette)))
     }
 
-    /// Validates the YAML theme structure and color formats.
+    /// Validates the theme configuration.
     pub fn validate(&self) -> Result<()> {
         if self.name.is_empty() {
             return Err(anyhow!("Theme name cannot be empty."));
         }
 
-        for (color_name, color_value) in &self.colors {
-            parse_color(color_value).map_err(|e| anyhow!("Invalid color format for '{}': {}", color_name, e))?;
+        for (key, color_str) in &self.colors {
+            parse_color(color_str).map_err(|e| anyhow!("Invalid color value for main color '{}': {}", key, e))?;
         }
-
-        if let Some(term_colors) = &self.terminal_colors {
-            for (color_name, color_value) in term_colors {
-                parse_color(color_value).map_err(|e| anyhow!("Invalid terminal color format for '{}': {}", color_name, e))?;
-            }
+        for (key, color_str) in &self.syntax_highlighting {
+            parse_color(color_str).map_err(|e| anyhow!("Invalid color value for syntax highlighting '{}': {}", key, e))?;
+        }
+        for (key, color_str) in &self.ui_elements {
+            parse_color(color_str).map_err(|e| anyhow!("Invalid color value for UI element '{}': {}", key, e))?;
+        }
+        for (key, color_str) in &self.terminal_colors {
+            parse_color(color_str).map_err(|e| anyhow!("Invalid color value for terminal color '{}': {}", key, e))?;
         }
 
         Ok(())
@@ -106,7 +148,7 @@ pub fn parse_color(color_str: &str) -> Result<Color> {
             let g = parts[1].parse::<u8>()?;
             let b = parts[2].parse::<u8>()?;
             let a = parts[3].parse::<f32>()?; // Alpha is 0.0-1.0
-            return Ok(Color::from_rgba8(r, g, b, (a * 255.0).round() as u8));
+            return Ok(Color::from_rgba(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a));
         } else {
             return Err(anyhow!("Invalid RGB/RGBA format: {}", s));
         }
@@ -131,8 +173,17 @@ pub fn parse_color(color_str: &str) -> Result<Color> {
         "gray" => Ok(Color::from_rgb(0.5, 0.5, 0.5)),
         "lightgray" => Ok(Color::from_rgb(0.8, 0.8, 0.8)),
         "darkgray" => Ok(Color::from_rgb(0.3, 0.3, 0.3)),
+        "transparent" => Ok(Color::TRANSPARENT),
         _ => Err(anyhow!("Unknown color format or named color: {}", s)),
     }
+}
+
+/// Converts an `iced::Color` to a hex string (#RRGGBB).
+pub fn color_to_hex(color: Color) -> String {
+    format!("#{:02X}{:02X}{:02X}",
+            (color.r * 255.0).round() as u8,
+            (color.g * 255.0).round() as u8,
+            (color.b * 255.0).round() as u8)
 }
 
 #[cfg(test)]
@@ -199,7 +250,9 @@ mod tests {
             description: None,
             author: None,
             colors,
-            terminal_colors: None,
+            syntax_highlighting: HashMap::new(),
+            ui_elements: HashMap::new(),
+            terminal_colors: HashMap::new(),
         };
 
         let iced_theme = theme.to_iced_theme();
@@ -222,7 +275,9 @@ mod tests {
             description: None,
             author: None,
             colors,
-            terminal_colors: None,
+            syntax_highlighting: HashMap::new(),
+            ui_elements: HashMap::new(),
+            terminal_colors: HashMap::new(),
         };
         assert!(theme.validate().is_ok());
 
@@ -233,7 +288,9 @@ mod tests {
             description: None,
             author: None,
             colors: invalid_colors,
-            terminal_colors: None,
+            syntax_highlighting: HashMap::new(),
+            ui_elements: HashMap::new(),
+            terminal_colors: HashMap::new(),
         };
         assert!(invalid_theme.validate().is_err());
 
@@ -242,7 +299,9 @@ mod tests {
             description: None,
             author: None,
             colors: HashMap::new(),
-            terminal_colors: None,
+            syntax_highlighting: HashMap::new(),
+            ui_elements: HashMap::new(),
+            terminal_colors: HashMap::new(),
         };
         assert!(empty_name_theme.validate().is_err());
     }

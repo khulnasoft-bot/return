@@ -1,583 +1,530 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use anyhow::{anyhow, Result};
 use tokio::fs;
-use super::CONFIG_DIR;
+use anyhow::Result;
 use log::{info, error};
-use serde_yaml;
 
-const PREFERENCES_FILE: &str = "preferences.yaml";
+use super::CONFIG_DIR;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Top-level preferences struct
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UserPreferences {
+    #[serde(default)]
     pub general: GeneralPreferences,
-    pub terminal: TerminalPreferences,
-    pub editor: EditorPreferences,
+    #[serde(default)]
     pub ui: UiPreferences,
-    pub performance: PerformancePreferences,
-    pub privacy: PrivacyPreferences,
+    #[serde(default)]
+    pub terminal: TerminalPreferences,
+    #[serde(default)]
+    pub editor: EditorPreferences,
+    #[serde(default)]
+    pub keybindings: KeybindingPreferences,
+    #[serde(default)]
     pub ai: AiPreferences,
-    pub plugins: PluginConfig,
-    pub keybindings: KeyBindings,
-    pub workflow_engine: WorkflowEnginePreferences,
-    pub integrations: IntegrationPreferences,
-    pub development: DevelopmentPreferences,
-    pub env_profiles: EnvironmentProfiles,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct GeneralPreferences {
-    pub startup_behavior: StartupBehavior,
-    pub default_shell: Option<String>,
-    pub working_directory: WorkingDirectoryBehavior,
-    pub auto_update: bool,
-    pub telemetry_enabled: bool,
-    pub crash_reporting: bool,
-    pub confirm_exit: bool,
-    pub auto_update_check: bool,
-    pub default_environment_profile: Option<String>,
-    pub font_size: u16,
-    pub theme_name: String,
-    pub enable_animations: bool,
-}
-
-impl Default for GeneralPreferences {
-    fn default() -> Self {
-        Self {
-            startup_behavior: StartupBehavior::NewSession,
-            default_shell: None,
-            working_directory: WorkingDirectoryBehavior::Home,
-            auto_update: true,
-            telemetry_enabled: false,
-            crash_reporting: true,
-            confirm_exit: true,
-            auto_update_check: true,
-            default_environment_profile: None,
-            font_size: 14,
-            theme_name: "gruvbox-dark".to_string(), // Default theme
-            enable_animations: true,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TerminalPreferences {
-    pub font_size: u16,
-    pub font_family: String,
-    pub terminal_rows: u16,
-    pub terminal_cols: u16,
-    pub enable_ligatures: bool,
-    pub scrollback_lines: usize,
-    pub default_working_directory: Option<String>,
-    pub enable_transparency: bool,
-    pub transparency_level: f32,
-    pub enable_bell: bool,
-    pub paste_on_middle_click: bool,
-    pub scroll_sensitivity: f32,
-    pub mouse_reporting: bool,
-    pub copy_on_select: bool,
-    pub paste_on_right_click: bool,
-    pub confirm_before_closing: bool,
-    pub bell_behavior: BellBehavior,
-    pub cursor_style: CursorStyle,
-    pub cursor_blink: bool,
-    pub word_separators: String,
-    pub url_detection: bool,
-    pub hyperlink_behavior: HyperlinkBehavior,
-    pub shell: String,
-}
-
-impl Default for TerminalPreferences {
-    fn default() -> Self {
-        Self {
-            font_size: 14,
-            font_family: "Fira Code".to_string(),
-            terminal_rows: 24,
-            terminal_cols: 80,
-            enable_ligatures: true,
-            scrollback_lines: 1000,
-            default_working_directory: None,
-            enable_transparency: false,
-            transparency_level: 0.9,
-            enable_bell: true,
-            paste_on_middle_click: false,
-            scroll_sensitivity: 1.0,
-            mouse_reporting: true,
-            copy_on_select: false,
-            paste_on_right_click: true,
-            confirm_before_closing: true,
-            bell_behavior: BellBehavior::Visual,
-            cursor_style: CursorStyle::Block,
-            cursor_blink: true,
-            word_separators: " \t\n\"'`()[]{}".to_string(),
-            url_detection: true,
-            hyperlink_behavior: HyperlinkBehavior::CtrlClick,
-            shell: if cfg!(windows) {
-                "powershell.exe".to_string()
-            } else {
-                "bash".to_string()
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct EditorPreferences {
-    pub vim_mode: bool,
-    pub auto_suggestions: bool,
-    pub syntax_highlighting: bool,
-    pub auto_completion: bool,
-    pub bracket_matching: bool,
-    pub indent_size: usize,
-    pub tab_width: usize,
-    pub insert_spaces: bool,
-    pub trim_whitespace: bool,
-    pub auto_save: bool,
-    pub word_wrap: bool,
-    pub tab_size: u8,
-    pub show_line_numbers: bool,
-}
-
-impl Default for EditorPreferences {
-    fn default() -> Self {
-        Self {
-            vim_mode: false,
-            auto_suggestions: true,
-            syntax_highlighting: true,
-            auto_completion: true,
-            bracket_matching: true,
-            indent_size: 4,
-            tab_width: 4,
-            insert_spaces: true,
-            trim_whitespace: true,
-            auto_save: true,
-            word_wrap: false,
-            tab_size: 4,
-            show_line_numbers: true,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UiPreferences {
-    pub theme_name: String,
-    pub show_tab_bar: TabBarVisibility,
-    pub show_title_bar: bool,
-    pub show_menu_bar: bool,
-    pub compact_mode: bool,
-    pub transparency: f32,
-    pub blur_background: bool,
-    pub animations_enabled: bool,
-    pub reduce_motion: bool,
-    pub high_contrast: bool,
-    pub zoom_level: f32,
-    pub sync_with_os_theme: bool,
-    pub app_icon: String,
-    pub open_new_windows_custom_size: bool,
-    pub window_opacity: f32,
-    pub window_blur_radius: f32,
-    pub input_type: InputType,
-    pub input_position: InputPosition,
-    pub dim_inactive_panes: bool,
-    pub focus_follows_mouse: bool,
-    pub enable_fuzzy_match: bool,
-    pub enable_markdown_preview: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PerformancePreferences {
-    pub gpu_acceleration: bool,
-    pub vsync: bool,
-    pub max_fps: Option<u32>,
-    pub memory_limit: Option<usize>,
-    pub background_throttling: bool,
-    pub lazy_rendering: bool,
-    pub texture_atlas_size: u32,
-    pub enable_performance_profiling: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PrivacyPreferences {
-    pub history_enabled: bool,
-    pub history_limit: usize,
-    pub clear_history_on_exit: bool,
-    pub incognito_mode: bool,
-    pub log_level: LogLevel,
-    pub share_usage_data: bool,
-    pub redact_sensitive_info: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum LogLevel {
-    Debug,
-    Info,
-    Warn,
-    Error,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AiPreferences {
-    pub enable_ai_assistant: bool,
-    pub ai_api_key: Option<String>,
-    pub ai_model: String,
-    pub ai_temperature: f32,
-    pub ai_max_tokens: u32,
-    pub ai_provider_type: String,
-    pub fallback_ai_provider_type: Option<String>,
-    pub fallback_ai_model: Option<String>,
-    pub local_only_ai_mode: bool,
-    pub enable_natural_language_detection: bool,
-    pub provider_type: String,
-    pub api_key: Option<String>,
-    pub model: String,
-    pub enable_tool_use: bool,
-    pub max_conversation_history: usize,
-    pub redact_sensitive_info: bool,
-    pub local_only_ai_mode: bool,
-    pub fallback_provider_type: Option<String>,
-    pub fallback_api_key: Option<String>,
-    pub fallback_model: Option<String>,
-}
-
-impl Default for AiPreferences {
-    fn default() -> Self {
-        Self {
-            enable_ai_assistant: true,
-            ai_api_key: None,
-            ai_model: "gpt-4o".to_string(),
-            ai_temperature: 0.7,
-            ai_max_tokens: 500,
-            ai_provider_type: "openai".to_string(),
-            fallback_ai_provider_type: Some("ollama".to_string()),
-            fallback_ai_model: Some("llama2".to_string()),
-            local_only_ai_mode: false,
-            enable_natural_language_detection: false,
-            provider_type: "openai".to_string(),
-            api_key: None, // Should be loaded from env or config
-            model: "gpt-4o".to_string(),
-            enable_tool_use: true,
-            max_conversation_history: 20,
-            redact_sensitive_info: true,
-            local_only_ai_mode: false,
-            fallback_provider_type: Some("ollama".to_string()),
-            fallback_api_key: None,
-            fallback_model: Some("llama2".to_string()),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PluginConfig {
-    pub enabled_plugins: Vec<String>,
-    pub plugin_settings: HashMap<String, serde_json::Value>,
-    pub auto_update_plugins: bool,
-    pub allow_unsigned_plugins: bool,
-    pub enable_plugins: bool,
-    pub enable_wasm_plugins: bool,
-    pub enable_lua_plugins: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KeyBindings {
-    pub bindings: HashMap<String, KeyBinding>,
-    pub keybindings_file: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct KeyBinding {
-    pub key: String,
-    pub modifiers: Vec<Modifier>,
-    pub action: Action,
-    pub when: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Modifier {
-    Ctrl,
-    Alt,
-    Shift,
-    Super,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum Action {
-    NewTab,
-    CloseTab,
-    NextTab,
-    PreviousTab,
-    SplitHorizontal,
-    SplitVertical,
-    CloseSplit,
-    Copy,
-    Paste,
-    Cut,
-    SelectAll,
-    Find,
-    FindNext,
-    FindPrevious,
-    ScrollUp,
-    ScrollDown,
-    ScrollToTop,
-    ScrollToBottom,
-    ToggleFullscreen,
-    ToggleSettings,
-    Quit,
-    Command(String),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkflowEnginePreferences {
-    pub enable_workflow_engine: bool,
-    pub enable_debugger: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IntegrationPreferences {
-    pub enable_cloud_sync: bool,
-    pub enable_session_sharing: bool,
-    pub enable_drive_integration: bool,
-    pub enable_watcher: bool,
-    pub enable_websocket_server: bool,
-    pub enable_cli_integration: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DevelopmentPreferences {
-    pub enable_virtual_fs: bool,
-    pub enable_graphql_api: bool,
-    pub enable_syntax_tree: bool,
-    pub enable_lpc_support: bool,
-    pub enable_mcq_support: bool,
-    pub enable_asset_macro: bool,
-    pub enable_distribution_packaging: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EnvironmentProfile {
-    pub name: String,
-    pub variables: HashMap<String, String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EnvironmentProfiles {
-    pub profiles: HashMap<String, EnvironmentProfile>,
-    pub active_profile: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum InputType {
-    Universal,
-    Classic,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum InputPosition {
-    PinToBottom,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum StartupBehavior {
-    NewSession,
-    RestoreLastSession,
-    CustomCommand(String),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum WorkingDirectoryBehavior {
-    Home,
-    LastUsed,
-    Custom(String),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum BellBehavior {
-    None,
-    Visual,
-    Audio,
-    Both,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum CursorStyle {
-    Block,
-    Underline,
-    Bar,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum HyperlinkBehavior {
-    Click,
-    CtrlClick,
-    Disabled,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum TabBarVisibility {
-    Always,
-    WhenMultiple,
-    Never,
+    #[serde(default)]
+    pub privacy: PrivacyPreferences,
+    #[serde(default)]
+    pub performance: PerformancePreferences,
+    #[serde(default)]
+    pub collaboration: CollaborationPreferences,
+    #[serde(default)]
+    pub cloud_sync: CloudSyncPreferences,
+    #[serde(default)]
+    pub drive: DrivePreferences,
+    #[serde(default)]
+    pub workflows: WorkflowPreferences,
 }
 
 impl Default for UserPreferences {
     fn default() -> Self {
         Self {
             general: GeneralPreferences::default(),
+            ui: UiPreferences::default(),
             terminal: TerminalPreferences::default(),
             editor: EditorPreferences::default(),
-            ui: UiPreferences::default(),
-            performance: PerformancePreferences::default(),
-            privacy: PrivacyPreferences::default(),
+            keybindings: KeybindingPreferences::default(),
             ai: AiPreferences::default(),
-            plugins: PluginConfig::default(),
-            keybindings: KeyBindings::default(),
-            workflow_engine: WorkflowEnginePreferences::default(),
-            integrations: IntegrationPreferences::default(),
-            development: DevelopmentPreferences::default(),
-            env_profiles: EnvironmentProfiles::default(),
+            privacy: PrivacyPreferences::default(),
+            performance: PerformancePreferences::default(),
+            collaboration: CollaborationPreferences::default(),
+            cloud_sync: CloudSyncPreferences::default(),
+            drive: DrivePreferences::default(),
+            workflows: WorkflowPreferences::default(),
         }
     }
 }
 
 impl UserPreferences {
-    /// Loads preferences from a YAML file, or returns default if not found/invalid.
-    pub async fn load_or_default() -> Result<Self> {
-        match fs::read_to_string(PREFERENCES_FILE).await {
-            Ok(contents) => {
-                match serde_yaml::from_str(&contents) {
-                    Ok(prefs) => {
-                        info!("Preferences loaded from {}", PREFERENCES_FILE);
-                        Ok(prefs)
-                    }
-                    Err(e) => {
-                        error!("Failed to parse preferences file: {}. Using default preferences.", e);
-                        Ok(Self::default())
-                    }
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                info!("Preferences file not found. Creating with default preferences.");
-                let default_prefs = Self::default();
-                default_prefs.save().await?; // Save defaults for future use
-                Ok(default_prefs)
-            }
-            Err(e) => {
-                error!("Failed to read preferences file: {}. Using default preferences.", e);
-                Ok(Self::default())
-            }
+    const FILE_NAME: &'static str = "preferences.yaml";
+
+    pub async fn load() -> Result<Self> {
+        let path = CONFIG_DIR.join(Self::FILE_NAME);
+        if path.exists() {
+            info!("Loading preferences from: {:?}", path);
+            let content = fs::read_to_string(&path).await?;
+            let prefs: Self = serde_yaml::from_str(&content)?;
+            Ok(prefs)
+        } else {
+            info!("Preferences file not found at {:?}. Creating default preferences.", path);
+            let default_prefs = Self::default();
+            default_prefs.save().await?; // Save default preferences
+            Ok(default_prefs)
         }
     }
 
-    /// Saves the current preferences to a YAML file.
     pub async fn save(&self) -> Result<()> {
-        let yaml_string = serde_yaml::to_string(self)?;
-        fs::write(PREFERENCES_FILE, yaml_string)
-            .await
-            .map_err(|e| anyhow!("Failed to save preferences to {}: {}", PREFERENCES_FILE, e))?;
-        info!("Preferences saved to {}", PREFERENCES_FILE);
+        let path = CONFIG_DIR.join(Self::FILE_NAME);
+        let content = serde_yaml::to_string(self)?;
+        fs::write(&path, content).await?;
+        info!("Preferences saved to: {:?}", path);
         Ok(())
     }
 }
 
-pub fn init() {
-    info!("config/preferences module loaded");
+// --- Nested Preference Structs ---
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GeneralPreferences {
+    #[serde(default = "default_font_size")]
+    pub font_size: u16,
+    #[serde(default = "default_auto_update")]
+    pub auto_update: bool,
+    #[serde(default = "default_telemetry_enabled")]
+    pub telemetry_enabled: bool,
+    #[serde(default = "default_startup_command")]
+    pub startup_command: String,
 }
+
+impl Default for GeneralPreferences {
+    fn default() -> Self {
+        Self {
+            font_size: default_font_size(),
+            auto_update: default_auto_update(),
+            telemetry_enabled: default_telemetry_enabled(),
+            startup_command: default_startup_command(),
+        }
+    }
+}
+
+fn default_font_size() -> u16 { 14 }
+fn default_auto_update() -> bool { true }
+fn default_telemetry_enabled() -> bool { true }
+fn default_startup_command() -> String { "".to_string() }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UiPreferences {
+    #[serde(default = "default_theme_name")]
+    pub theme_name: String,
+    #[serde(default = "default_sync_with_os_theme")]
+    pub sync_with_os_theme: bool,
+    #[serde(default = "default_app_icon")]
+    pub app_icon: String,
+    #[serde(default = "default_open_new_windows_custom_size")]
+    pub open_new_windows_custom_size: bool,
+    #[serde(default = "default_window_opacity")]
+    pub window_opacity: f32,
+    #[serde(default = "default_window_blur_radius")]
+    pub window_blur_radius: f32,
+    #[serde(default = "default_input_type")]
+    pub input_type: InputType,
+    #[serde(default = "default_input_position")]
+    pub input_position: InputPosition,
+    #[serde(default = "default_dim_inactive_panes")]
+    pub dim_inactive_panes: bool,
+    #[serde(default = "default_focus_follows_mouse")]
+    pub focus_follows_mouse: bool,
+}
+
+impl Default for UiPreferences {
+    fn default() -> Self {
+        Self {
+            theme_name: default_theme_name(),
+            sync_with_os_theme: default_sync_with_os_theme(),
+            app_icon: default_app_icon(),
+            open_new_windows_custom_size: default_open_new_windows_custom_size(),
+            window_opacity: default_window_opacity(),
+            window_blur_radius: default_window_blur_radius(),
+            input_type: default_input_type(),
+            input_position: default_input_position(),
+            dim_inactive_panes: default_dim_inactive_panes(),
+            focus_follows_mouse: default_focus_follows_mouse(),
+        }
+    }
+}
+
+fn default_theme_name() -> String { "nord".to_string() }
+fn default_sync_with_os_theme() -> bool { false }
+fn default_app_icon() -> String { "Default".to_string() }
+fn default_open_new_windows_custom_size() -> bool { false }
+fn default_window_opacity() -> f32 { 1.0 }
+fn default_window_blur_radius() -> f32 { 0.0 }
+fn default_input_type() -> InputType { InputType::Universal }
+fn default_input_position() -> InputPosition { InputPosition::PinToBottom }
+fn default_dim_inactive_panes() -> bool { false }
+fn default_focus_follows_mouse() -> bool { false }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum InputType {
+    Universal,
+    Classic,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum InputPosition {
+    PinToBottom,
+    // Other positions could be added here
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TerminalPreferences {
+    #[serde(default = "default_shell")]
+    pub shell: String,
+    #[serde(default = "default_scrollback_lines")]
+    pub scrollback_lines: u32,
+    #[serde(default = "default_bell_enabled")]
+    pub bell_enabled: bool,
+}
+
+impl Default for TerminalPreferences {
+    fn default() -> Self {
+        Self {
+            shell: default_shell(),
+            scrollback_lines: default_scrollback_lines(),
+            bell_enabled: default_bell_enabled(),
+        }
+    }
+}
+
+fn default_shell() -> String {
+    #[cfg(target_os = "windows")]
+    { "powershell.exe".to_string() }
+    #[cfg(target_os = "macos")]
+    { "/bin/zsh".to_string() }
+    #[cfg(target_os = "linux")]
+    { "/bin/bash".to_string() }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    { "sh".to_string() }
+}
+fn default_scrollback_lines() -> u32 { 10000 }
+fn default_bell_enabled() -> bool { false }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EditorPreferences {
+    #[serde(default = "default_font_ligatures")]
+    pub font_ligatures: bool,
+    #[serde(default = "default_tab_size")]
+    pub tab_size: u8,
+    #[serde(default = "default_line_numbers")]
+    pub line_numbers: bool,
+}
+
+impl Default for EditorPreferences {
+    fn default() -> Self {
+        Self {
+            font_ligatures: default_font_ligatures(),
+            tab_size: default_tab_size(),
+            line_numbers: default_line_numbers(),
+        }
+    }
+}
+
+fn default_font_ligatures() -> bool { false }
+fn default_tab_size() -> u8 { 4 }
+fn default_line_numbers() -> bool { true }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct KeybindingPreferences {
+    #[serde(default)]
+    pub bindings: HashMap<String, String>, // Action -> Key combination
+}
+
+impl Default for KeybindingPreferences {
+    fn default() -> Self {
+        let mut bindings = HashMap::new();
+        bindings.insert("copy".to_string(), "Cmd+C".to_string());
+        bindings.insert("paste".to_string(), "Cmd+V".to_string());
+        bindings.insert("new_tab".to_string(), "Cmd+T".to_string());
+        Self { bindings }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AiPreferences {
+    #[serde(default = "default_ai_provider_type")]
+    pub ai_provider_type: String,
+    #[serde(default = "default_ai_api_key")]
+    pub ai_api_key: Option<String>,
+    #[serde(default = "default_ai_model")]
+    pub ai_model: String,
+    #[serde(default = "default_fallback_ai_provider_type")]
+    pub fallback_ai_provider_type: Option<String>,
+    #[serde(default = "default_fallback_ai_model")]
+    pub fallback_ai_model: Option<String>,
+    #[serde(default = "default_redact_sensitive_info")]
+    pub redact_sensitive_info: bool,
+    #[serde(default = "default_local_only_ai_mode")]
+    pub local_only_ai_mode: bool,
+    #[serde(default = "default_enable_graphql_api")]
+    pub enable_graphql_api: bool,
+}
+
+impl Default for AiPreferences {
+    fn default() -> Self {
+        Self {
+            ai_provider_type: default_ai_provider_type(),
+            ai_api_key: default_ai_api_key(),
+            ai_model: default_ai_model(),
+            fallback_ai_provider_type: default_fallback_ai_provider_type(),
+            fallback_ai_model: default_fallback_ai_model(),
+            redact_sensitive_info: default_redact_sensitive_info(),
+            local_only_ai_mode: default_local_only_ai_mode(),
+            enable_graphql_api: default_enable_graphql_api(),
+        }
+    }
+}
+
+fn default_ai_provider_type() -> String { "openai".to_string() }
+fn default_ai_api_key() -> Option<String> { None }
+fn default_ai_model() -> String { "gpt-4o".to_string() }
+fn default_fallback_ai_provider_type() -> Option<String> { None }
+fn default_fallback_ai_model() -> Option<String> { None }
+fn default_redact_sensitive_info() -> bool { true }
+fn default_local_only_ai_mode() -> bool { false }
+fn default_enable_graphql_api() -> bool { false }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PrivacyPreferences {
+    #[serde(default = "default_command_history_retention_days")]
+    pub command_history_retention_days: u16,
+    #[serde(default = "default_ai_interaction_logging")]
+    pub ai_interaction_logging: bool,
+}
+
+impl Default for PrivacyPreferences {
+    fn default() -> Self {
+        Self {
+            command_history_retention_days: default_command_history_retention_days(),
+            ai_interaction_logging: default_ai_interaction_logging(),
+        }
+    }
+}
+
+fn default_command_history_retention_days() -> u16 { 365 }
+fn default_ai_interaction_logging() -> bool { true }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PerformancePreferences {
+    #[serde(default = "default_max_concurrent_commands")]
+    pub max_concurrent_commands: u8,
+    #[serde(default = "default_enable_gpu_acceleration")]
+    pub enable_gpu_acceleration: bool,
+}
+
+impl Default for PerformancePreferences {
+    fn default() -> Self {
+        Self {
+            max_concurrent_commands: default_max_concurrent_commands(),
+            enable_gpu_acceleration: default_enable_gpu_acceleration(),
+        }
+    }
+}
+
+fn default_max_concurrent_commands() -> u8 { 10 }
+fn default_enable_gpu_acceleration() -> bool { true }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CollaborationPreferences {
+    #[serde(default = "default_enable_session_sharing")]
+    pub enable_session_sharing: bool,
+    #[serde(default = "default_default_share_mode")]
+    pub default_share_mode: ShareMode,
+}
+
+impl Default for CollaborationPreferences {
+    fn default() -> Self {
+        Self {
+            enable_session_sharing: default_enable_session_sharing(),
+            default_share_mode: default_default_share_mode(),
+        }
+    }
+}
+
+fn default_enable_session_sharing() -> bool { false }
+fn default_default_share_mode() -> ShareMode { ShareMode::ReadOnly }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ShareMode {
+    ReadOnly,
+    ReadWrite,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CloudSyncPreferences {
+    #[serde(default = "default_enable_cloud_sync")]
+    pub enable_cloud_sync: bool,
+    #[serde(default = "default_sync_interval_minutes")]
+    pub sync_interval_minutes: u16,
+    #[serde(default = "default_sync_on_startup")]
+    pub sync_on_startup: bool,
+}
+
+impl Default for CloudSyncPreferences {
+    fn default() -> Self {
+        Self {
+            enable_cloud_sync: default_enable_cloud_sync(),
+            sync_interval_minutes: default_sync_interval_minutes(),
+            sync_on_startup: default_sync_on_startup(),
+        }
+    }
+}
+
+fn default_enable_cloud_sync() -> bool { false }
+fn default_sync_interval_minutes() -> u16 { 60 }
+fn default_sync_on_startup() -> bool { true }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EnvironmentProfiles {
+    #[serde(default = "default_active_profile")]
+    pub active_profile: Option<String>,
+    #[serde(default)]
+    pub profiles: HashMap<String, EnvironmentProfile>,
+}
+
+impl Default for EnvironmentProfiles {
+    fn default() -> Self {
+        let mut profiles = HashMap::new();
+        profiles.insert("default".to_string(), EnvironmentProfile::default());
+        Self {
+            active_profile: Some("default".to_string()),
+            profiles,
+        }
+    }
+}
+
+fn default_active_profile() -> Option<String> { Some("default".to_string()) }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EnvironmentProfile {
+    #[serde(default)]
+    pub variables: HashMap<String, String>,
+}
+
+impl Default for EnvironmentProfile {
+    fn default() -> Self {
+        Self {
+            variables: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DrivePreferences {
+    #[serde(default = "default_enable_drive_integration")]
+    pub enable_drive_integration: bool,
+    #[serde(default = "default_default_drive_path")]
+    pub default_drive_path: String,
+}
+
+impl Default for DrivePreferences {
+    fn default() -> Self {
+        Self {
+            enable_drive_integration: default_enable_drive_integration(),
+            default_drive_path: default_default_drive_path(),
+        }
+    }
+}
+
+fn default_enable_drive_integration() -> bool { false }
+fn default_default_drive_path() -> String { "/mnt/neoterm_drive".to_string() }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkflowPreferences {
+    #[serde(default = "default_enable_workflow_suggestions")]
+    pub enable_workflow_suggestions: bool,
+    #[serde(default = "default_workflow_storage_path")]
+    pub workflow_storage_path: String,
+}
+
+impl Default for WorkflowPreferences {
+    fn default() -> Self {
+        Self {
+            enable_workflow_suggestions: default_enable_workflow_suggestions(),
+            workflow_storage_path: default_workflow_storage_path(),
+        }
+    }
+}
+
+fn default_enable_workflow_suggestions() -> bool { true }
+fn default_workflow_storage_path() -> String { "workflows".to_string() }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tokio::fs;
-    use std::path::Path;
 
-    const TEST_PREFS_FILE: &str = "test_preferences.yaml";
+    async fn setup_test_env() -> PathBuf {
+        let test_dir = PathBuf::from("./test_config_prefs");
+        if test_dir.exists() {
+            fs::remove_dir_all(&test_dir).await.unwrap();
+        }
+        fs::create_dir_all(&test_dir).await.unwrap();
+        // Temporarily override CONFIG_DIR for tests
+        unsafe {
+            let config_dir_mut = &mut *(&*CONFIG_DIR as *const PathBuf as *mut PathBuf);
+            *config_dir_mut = test_dir.clone();
+        }
+        test_dir
+    }
 
-    async fn cleanup_test_file() {
-        let _ = fs::remove_file(TEST_PREFS_FILE).await;
+    async fn cleanup_test_env(test_dir: PathBuf) {
+        let _ = fs::remove_dir_all(&test_dir).await;
+        // Restore original CONFIG_DIR if necessary (complex with Lazy, usually done via explicit paths)
     }
 
     #[tokio::test]
-    async fn test_user_preferences_default() {
+    async fn test_user_preferences_load_and_save() {
+        let test_dir = setup_test_env().await;
+
+        // Test loading default and saving
+        let mut prefs = UserPreferences::load().await.unwrap();
+        assert_eq!(prefs.general.font_size, 14);
+        assert_eq!(prefs.ui.theme_name, "nord");
+
+        // Modify and save
+        prefs.general.font_size = 16;
+        prefs.ui.theme_name = "dark_mode".to_string();
+        prefs.save().await.unwrap();
+
+        // Load again and verify changes
+        let loaded_prefs = UserPreferences::load().await.unwrap();
+        assert_eq!(loaded_prefs.general.font_size, 16);
+        assert_eq!(loaded_prefs.ui.theme_name, "dark_mode");
+
+        cleanup_test_env(test_dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_default_values() {
         let prefs = UserPreferences::default();
         assert_eq!(prefs.general.font_size, 14);
-        assert_eq!(prefs.terminal.scrollback_lines, 1000);
+        assert_eq!(prefs.ui.theme_name, "nord");
+        assert_eq!(prefs.terminal.scrollback_lines, 10000);
         assert_eq!(prefs.editor.tab_size, 4);
-        assert_eq!(prefs.ai.model, "gpt-4o");
+        assert_eq!(prefs.ai.ai_provider_type, "openai");
+        assert_eq!(prefs.privacy.command_history_retention_days, 365);
+        assert_eq!(prefs.performance.max_concurrent_commands, 10);
+        assert_eq!(prefs.collaboration.enable_session_sharing, false);
+        assert_eq!(prefs.cloud_sync.sync_interval_minutes, 60);
+        assert_eq!(prefs.drive.enable_drive_integration, false);
+        assert_eq!(prefs.workflows.enable_workflow_suggestions, true);
     }
 
     #[tokio::test]
-    async fn test_user_preferences_save_and_load() {
-        cleanup_test_file().await;
-
-        let mut original_prefs = UserPreferences::default();
-        original_prefs.general.font_size = 16;
-        original_prefs.terminal.shell = "zsh".to_string();
-        original_prefs.ai.model = "claude-3-opus-20240229".to_string();
-
-        // Temporarily change the file name for testing
-        let old_file_name = PREFERENCES_FILE;
-        unsafe {
-            let ptr = PREFERENCES_FILE as *const _ as *mut &str;
-            *ptr = TEST_PREFS_FILE;
-        }
-
-        original_prefs.save().await.unwrap();
-
-        let loaded_prefs = UserPreferences::load_or_default().await.unwrap();
-        assert_eq!(original_prefs, loaded_prefs);
-
-        // Restore original file name
-        unsafe {
-            let ptr = PREFERENCES_FILE as *const _ as *mut &str;
-            *ptr = old_file_name;
-        }
-        cleanup_test_file().await;
-    }
-
-    #[tokio::test]
-    async fn test_user_preferences_load_non_existent_file() {
-        cleanup_test_file().await;
-
-        // Temporarily change the file name for testing
-        let old_file_name = PREFERENCES_FILE;
-        unsafe {
-            let ptr = PREFERENCES_FILE as *const _ as *mut &str;
-            *ptr = TEST_PREFS_FILE;
-        }
-
-        let loaded_prefs = UserPreferences::load_or_default().await.unwrap();
-        assert_eq!(loaded_prefs, UserPreferences::default());
-        // Verify that a default file was created
-        assert!(fs::metadata(TEST_PREFS_FILE).await.is_ok());
-
-        // Restore original file name
-        unsafe {
-            let ptr = PREFERENCES_FILE as *const _ as *mut &str;
-            *ptr = old_file_name;
-        }
-        cleanup_test_file().await;
-    }
-
-    #[tokio::test]
-    async fn test_user_preferences_load_invalid_file() {
-        cleanup_test_file().await;
-
-        // Temporarily change the file name for testing
-        let old_file_name = PREFERENCES_FILE;
-        unsafe {
-            let ptr = PREFERENCES_FILE as *const _ as *mut &str;
-            *ptr = TEST_PREFS_FILE;
-        }
-
-        fs::write(TEST_PREFS_FILE, "invalid yaml content: - [").await.unwrap();
-
-        let loaded_prefs = UserPreferences::load_or_default().await.unwrap();
-        assert_eq!(loaded_prefs, UserPreferences::default());
-
-        // Restore original file name
-        unsafe {
-            let ptr = PREFERENCES_FILE as *const _ as *mut &str;
-            *ptr = old_file_name;
-        }
-        cleanup_test_file().await;
+    async fn test_environment_profiles_default() {
+        let env_profiles = EnvironmentProfiles::default();
+        assert_eq!(env_profiles.active_profile, Some("default".to_string()));
+        assert!(env_profiles.profiles.contains_key("default"));
+        assert!(env_profiles.profiles.get("default").unwrap().variables.is_empty());
     }
 }

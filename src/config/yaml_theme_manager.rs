@@ -105,9 +105,9 @@ impl YamlThemeManager {
     }
 
     /// Gets a specific theme by name.
-    pub async fn get_theme(&self, name: &str) -> Option<YamlTheme> {
+    pub async fn get_theme(&self, name: &str) -> Result<YamlTheme> {
         let themes_read = self.themes.read().await;
-        themes_read.get(name).cloned()
+        themes_read.get(name).cloned().ok_or_else(|| anyhow!("Theme '{}' not found.", name))
     }
 
     /// Saves a new or updated theme to disk and reloads it into memory.
@@ -229,7 +229,7 @@ colors:
     }
 
     #[tokio::test]
-    async fn test_yaml_theme_manager_save_and_delete_theme() {
+    async fn test_yaml_theme_manager_save_and_get_theme() -> Result<()> {
         with_test_themes_dir!({
             setup_test_dir().await;
             let manager = YamlThemeManager::new();
@@ -244,22 +244,54 @@ colors:
                     map.insert("background".to_string(), "#ABCDEF".to_string());
                     map
                 },
-                terminal_colors: None,
+                syntax_highlighting: HashMap::new(),
+                ui_elements: HashMap::new(),
+                terminal_colors: HashMap::new(),
             };
 
-            manager.save_theme(new_theme.clone()).await.unwrap();
+            manager.save_theme(new_theme.clone()).await?;
 
             let themes_after_save = manager.list_themes().await;
             assert!(themes_after_save.contains(&"NewTestTheme".to_string()));
-            assert!(manager.get_theme("NewTestTheme").await.is_some());
+            assert!(manager.get_theme("NewTestTheme").await.is_ok());
             assert!(fs::metadata(Path::new(TEST_THEMES_DIR).join("NewTestTheme.yaml")).await.is_ok());
 
-            manager.delete_theme("NewTestTheme").await.unwrap();
+            let loaded_theme = manager.get_theme("NewTestTheme").await?;
+            assert_eq!(loaded_theme.name, "NewTestTheme");
+            assert_eq!(loaded_theme.colors.get("background").unwrap(), "#ABCDEF");
 
-            let themes_after_delete = manager.list_themes().await;
-            assert!(!themes_after_delete.contains(&"NewTestTheme".to_string()));
-            assert!(manager.get_theme("NewTestTheme").await.is_none());
-            assert!(fs::metadata(Path::new(TEST_THEMES_DIR).join("NewTestTheme.yaml")).await.is_err()); // File should be gone
+            cleanup_test_dir().await;
+        })
+    }
+
+    #[tokio::test]
+    async fn test_yaml_theme_manager_delete_theme() -> Result<()> {
+        with_test_themes_dir!({
+            setup_test_dir().await;
+            let manager = YamlThemeManager::new();
+            manager.init().await.unwrap();
+
+            let mut new_colors = HashMap::new();
+            new_colors.insert("background".to_string(), "#000000".to_string());
+            let theme_to_delete = YamlTheme {
+                name: "EphemeralTheme".to_string(),
+                description: None,
+                author: None,
+                colors: new_colors,
+                syntax_highlighting: HashMap::new(),
+                ui_elements: HashMap::new(),
+                terminal_colors: HashMap::new(),
+            };
+            manager.save_theme(theme_to_delete.clone()).await?;
+
+            let theme_file_path = Path::new(TEST_THEMES_DIR).join("EphemeralTheme.yaml");
+            assert!(theme_file_path.exists().await);
+            assert!(manager.get_theme("EphemeralTheme").await.is_ok());
+
+            manager.delete_theme("EphemeralTheme").await?;
+
+            assert!(!theme_file_path.exists().await);
+            assert!(manager.get_theme("EphemeralTheme").await.is_err());
 
             cleanup_test_dir().await;
         })
@@ -281,7 +313,9 @@ colors:
                     map.insert("background".to_string(), "not-a-color".to_string());
                     map
                 },
-                terminal_colors: None,
+                syntax_highlighting: HashMap::new(),
+                ui_elements: HashMap::new(),
+                terminal_colors: HashMap::new(),
             };
 
             let result = manager.save_theme(invalid_theme.clone()).await;

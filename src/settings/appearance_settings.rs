@@ -21,7 +21,7 @@ pub enum AppearanceSettingsMessage {
 
 #[derive(Debug, Clone)]
 pub struct AppearanceSettings {
-    preferences: UiPreferences,
+    pub preferences: UiPreferences, // Make public for SettingsView to access
 }
 
 impl AppearanceSettings {

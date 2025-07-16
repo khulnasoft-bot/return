@@ -68,6 +68,7 @@ pub struct SyncManager {
     sync_interval: Duration,
     event_sender: mpsc::Sender<SyncEvent>,
     event_receiver: mpsc::Receiver<SyncEvent>,
+    config: Arc<RwLock<SyncConfig>>,
     // In a real app, you'd have a client for your cloud storage service
     // cloud_client: Arc<dyn CloudClient + Send + Sync>,
 }
@@ -81,6 +82,7 @@ impl SyncManager {
             sync_interval: Duration::from_secs(sync_interval_seconds),
             event_sender: tx,
             event_receiver: rx,
+            config: Arc::new(RwLock::new(SyncConfig::default())),
             // cloud_client: Arc::new(MockCloudClient::new()), // Replace with real client
         }
     }
@@ -91,16 +93,24 @@ impl SyncManager {
         let data_to_sync_clone = self.data_to_sync.clone();
         let sync_interval = self.sync_interval;
         let event_sender_clone = self.event_sender.clone();
+        let config_clone = self.config.clone();
         // let cloud_client_clone = self.cloud_client.clone();
 
         tokio::spawn(async move {
-            let mut interval = interval(sync_interval);
+            let mut interval = time::interval(sync_interval);
             interval.tick().await; // Initial tick to wait for the first interval
 
             loop {
                 interval.tick().await;
                 info!("Performing periodic sync...");
                 let _ = event_sender_clone.send(SyncEvent::SyncStarted).await;
+
+                // Check if sync is enabled
+                let config = config_clone.read().await;
+                if !config.enabled {
+                    warn!("Sync is disabled. Skipping periodic sync.");
+                    continue;
+                }
 
                 // In a real scenario, you'd send data_to_sync_clone to the cloud_client
                 // and handle the response.
@@ -129,6 +139,12 @@ impl SyncManager {
     pub async fn trigger_manual_sync(&self) -> Result<()> {
         info!("Manual sync triggered.");
         let _ = self.event_sender.send(SyncEvent::SyncStarted).await;
+
+        let config = self.config.read().await;
+        if !config.enabled {
+            warn!("Sync is disabled. Skipping manual sync.");
+            return Ok(());
+        }
 
         let mut data_to_sync_write = self.data_to_sync.write().await;
         if !data_to_sync_write.files.is_empty() || !data_to_sync_write.settings.is_empty() || !data_to_sync_write.workflows.is_empty() {
@@ -174,6 +190,18 @@ impl SyncManager {
     /// Gets the current data queued for synchronization.
     pub async fn get_queued_data(&self) -> SyncData {
         self.data_to_sync.read().await.clone()
+    }
+
+    /// Gets the current configuration.
+    pub async fn get_config(&self) -> SyncConfig {
+        self.config.read().await.clone()
+    }
+
+    /// Sets the configuration.
+    pub async fn set_config(&self, config: SyncConfig) {
+        let mut current_config = self.config.write().await;
+        *current_config = config;
+        info!("Configuration updated.");
     }
 }
 
@@ -276,5 +304,22 @@ mod tests {
 
         assert!(manager.get_last_sync_time().await.is_some()); // Should still update last sync time
         assert!(manager.get_queued_data().await.files.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_sync_manager_config() {
+        let manager = SyncManager::new(60);
+        let mut config = manager.get_config().await;
+        config.enabled = true;
+        config.interval_minutes = 30;
+        config.target = SyncTarget::GitHubGist;
+        config.credentials.insert("api_key".to_string(), "12345".to_string());
+        manager.set_config(config).await;
+
+        let updated_config = manager.get_config().await;
+        assert!(updated_config.enabled);
+        assert_eq!(updated_config.interval_minutes, 30);
+        assert_eq!(updated_config.target, SyncTarget::GitHubGist);
+        assert_eq!(updated_config.credentials.get("api_key"), Some(&"12345".to_string()));
     }
 }

@@ -3,26 +3,30 @@ use iced::{
     Element, Length, Color, alignment,
 };
 use std::collections::HashMap;
-use crate::config::yaml_theme::{YamlTheme, parse_color, color_to_hex, YamlThemeError};
+use crate::config::yaml_theme::{YamlTheme, parse_color, color_to_hex};
+use anyhow::Result;
 use log::info;
 
 #[derive(Debug, Clone)]
 pub enum YamlThemeUiMessage {
     NameChanged(String),
     DescriptionChanged(String),
+    AuthorChanged(String),
     ColorChanged(String, String), // (color_key, new_hex_value)
     SyntaxHighlightingChanged(String, String),
     UiElementChanged(String, String),
-    AddColorField(String), // (field_type: "colors", "syntax_highlighting", "ui_elements")
+    TerminalColorChanged(String, String), // (terminal_color_key, new_hex_value)
+    AddColorField(String), // (field_type: "colors", "syntax_highlighting", "ui_elements", "terminal_colors")
     RemoveColorField(String, String), // (field_type, color_key)
     Save,
     Cancel,
     Error(String),
+    LoadTheme(YamlTheme), // New variant to load a theme into the UI
 }
 
 #[derive(Debug, Clone)]
 pub struct YamlThemeUi {
-    theme: YamlTheme,
+    pub theme: YamlTheme,
     original_theme: YamlTheme, // To allow reverting changes
     error_message: Option<String>,
 }
@@ -43,7 +47,10 @@ impl YamlThemeUi {
                 self.theme.name = name;
             }
             YamlThemeUiMessage::DescriptionChanged(desc) => {
-                self.theme.description = desc;
+                self.theme.description = Some(desc);
+            }
+            YamlThemeUiMessage::AuthorChanged(author) => {
+                self.theme.author = Some(author);
             }
             YamlThemeUiMessage::ColorChanged(key, value) => {
                 if parse_color(&value).is_ok() {
@@ -66,12 +73,20 @@ impl YamlThemeUi {
                     self.error_message = Some(format!("Invalid color format for UI element '{}'", key));
                 }
             }
+            YamlThemeUiMessage::TerminalColorChanged(key, value) => {
+                if parse_color(&value).is_ok() {
+                    self.theme.terminal_colors.insert(key, value);
+                } else {
+                    self.error_message = Some(format!("Invalid color format for terminal color '{}'", key));
+                }
+            }
             YamlThemeUiMessage::AddColorField(field_type) => {
-                let new_key = format!("new_color_{}", uuid::Uuid::new_v4().to_string()[..4].to_string());
+                let new_key = format!("new_field_{}", uuid::Uuid::new_v4().to_string()[..4].to_string());
                 match field_type.as_str() {
                     "colors" => { self.theme.colors.insert(new_key, "#FFFFFF".to_string()); },
                     "syntax_highlighting" => { self.theme.syntax_highlighting.insert(new_key, "#FFFFFF".to_string()); },
                     "ui_elements" => { self.theme.ui_elements.insert(new_key, "#FFFFFF".to_string()); },
+                    "terminal_colors" => { self.theme.terminal_colors.insert(new_key, "#FFFFFF".to_string()); },
                     _ => {}
                 }
             }
@@ -80,6 +95,7 @@ impl YamlThemeUi {
                     "colors" => { self.theme.colors.remove(&key); },
                     "syntax_highlighting" => { self.theme.syntax_highlighting.remove(&key); },
                     "ui_elements" => { self.theme.ui_elements.remove(&key); },
+                    "terminal_colors" => { self.theme.terminal_colors.remove(&key); },
                     _ => {}
                 }
             }
@@ -102,6 +118,11 @@ impl YamlThemeUi {
             YamlThemeUiMessage::Error(msg) => {
                 self.error_message = Some(msg);
             }
+            YamlThemeUiMessage::LoadTheme(theme) => {
+                self.theme = theme.clone();
+                self.original_theme = theme;
+                self.error_message = None;
+            }
         }
     }
 
@@ -117,25 +138,27 @@ impl YamlThemeUi {
 
         let description_input = row![
             text("Description:").width(Length::Fixed(100.0)),
-            text_input("Theme Description", &self.theme.description)
+            text_input("Theme Description", self.theme.description.as_deref().unwrap_or(""))
                 .on_input(YamlThemeUiMessage::DescriptionChanged)
                 .width(Length::Fill)
         ].spacing(10);
 
-        let color_section = |title: &str, map: &HashMap<String, String>, field_type: &str| {
+        let author_input = row![
+            text("Author:").width(Length::Fixed(100.0)),
+            text_input("Theme Author", self.theme.author.as_deref().unwrap_or(""))
+                .on_input(YamlThemeUiMessage::AuthorChanged)
+                .width(Length::Fill)
+        ].spacing(10);
+
+        let color_section = |title: &str, map: &HashMap<String, String>, field_type: &str, on_input_msg: fn(String, String) -> YamlThemeUiMessage| {
             let color_fields: Vec<Element<YamlThemeUiMessage>> = map.iter()
                 .map(|(key, value)| {
-                    let current_color = parse_color(value).unwrap_or_default();
+                    let current_color = parse_color(value).unwrap_or(Color::BLACK);
                     let preview_color = iced::Color::from_rgb(current_color.r, current_color.g, current_color.b);
                     row![
                         text(key).width(Length::Fixed(120.0)),
                         text_input("Hex or RGB", value)
-                            .on_input(move |s| match field_type {
-                                "colors" => YamlThemeUiMessage::ColorChanged(key.clone(), s),
-                                "syntax_highlighting" => YamlThemeUiMessage::SyntaxHighlightingChanged(key.clone(), s),
-                                "ui_elements" => YamlThemeUiMessage::UiElementChanged(key.clone(), s),
-                                _ => unreachable!(),
-                            })
+                            .on_input(move |s| on_input_msg(key.clone(), s))
                             .width(Length::FillPortion(0.6)),
                         container()
                             .width(Length::Fixed(30.0))
@@ -165,9 +188,11 @@ impl YamlThemeUi {
             ].spacing(10).into()
         };
 
-        let colors_section = color_section("Colors", &self.theme.colors, "colors");
-        let syntax_section = color_section("Syntax Highlighting", &self.theme.syntax_highlighting, "syntax_highlighting");
-        let ui_section = color_section("UI Elements", &self.theme.ui_elements, "ui_elements");
+        let colors_section = color_section("Main Colors", &self.theme.colors, "colors", YamlThemeUiMessage::ColorChanged);
+        let syntax_section = color_section("Syntax Highlighting", &self.theme.syntax_highlighting, "syntax_highlighting", YamlThemeUiMessage::SyntaxHighlightingChanged);
+        let ui_section = color_section("UI Elements", &self.theme.ui_elements, "ui_elements", YamlThemeUiMessage::UiElementChanged);
+        let terminal_section = color_section("Terminal Colors (ANSI)", &self.theme.terminal_colors, "terminal_colors", YamlThemeUiMessage::TerminalColorChanged);
+
 
         let error_display = if let Some(msg) = &self.error_message {
             text(msg).color(Color::RED).size(14).into()
@@ -185,9 +210,11 @@ impl YamlThemeUi {
                 header,
                 name_input,
                 description_input,
+                author_input,
                 colors_section,
                 syntax_section,
                 ui_section,
+                terminal_section,
                 error_display,
                 controls,
             ]

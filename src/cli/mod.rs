@@ -66,6 +66,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: ThemeCommands,
     },
+    /// Manage extensions
+    Extension {
+        #[command(subcommand)]
+        action: ExtensionCommands,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -145,6 +150,22 @@ pub enum ThemeCommands {
     Import {
         source: String,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ExtensionCommands {
+    /// List installed extensions
+    List,
+    /// Install an extension from a path or URL
+    Install {
+        source: String,
+    },
+    /// Uninstall an extension
+    Uninstall {
+        name: String,
+    },
+    /// Update all installed extensions
+    Update,
 }
 
 /// Initializes the CLI module.

@@ -1,26 +1,17 @@
-use iced::{Element, widget::{column, row, text, button, container, scrollable, pick_list, slider, checkbox, text_input}, Length, Color, alignment};
-use crate::{Message, config::*};
-use std::collections::HashMap;
-use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::{Path, PathBuf};
-use crate::config::preferences::Preferences;
-use crate::config::theme::ThemeConfig;
-use crate::agent_mode_eval::ai_client::AiConfig;
-use anyhow::Result;
+use iced::{Element, widget::{column, row, text, button, scrollable}, Length, Color, alignment, Command};
+use crate::config::*;
 use std::sync::Arc;
-use crate::config::ConfigManager;
-use crate::config::AppConfig;
+use log::{info, error};
 
 pub mod theme_editor;
 pub mod keybinding_editor;
 pub mod yaml_theme_ui;
-pub mod appearance_settings; // New module
+pub mod appearance_settings;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingsTab {
     General,
-    Appearance, // New tab
+    Appearance,
     Terminal,
     Editor,
     KeyBindings,
@@ -47,54 +38,52 @@ pub enum SettingsMessage {
     TabSelected(SettingsTab),
     KeybindingEditor(keybinding_editor::KeybindingEditorMessage),
     ThemeEditor(theme_editor::ThemeEditorMessage),
-    AppearanceSettings(appearance_settings::AppearanceSettingsMessage), // New message variant
+    AppearanceSettings(appearance_settings::AppearanceSettingsMessage),
     SaveAll,
     CancelAll,
-    // Add other settings messages here
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)] // Derive Debug for SettingsView
 pub struct SettingsView {
-    pub config: AppConfig,
+    pub config: AppConfig, // Holds the current application configuration
     selected_tab: SettingsTab,
     keybinding_editor: keybinding_editor::KeybindingEditor,
     theme_editor: theme_editor::ThemeEditor,
-    appearance_settings: appearance_settings::AppearanceSettings, // New field
-    yaml_theme_ui: yaml_theme_ui::YamlThemeUi, // Assuming this is for advanced YAML editing
-    config_manager: Arc<ConfigManager>,
+    appearance_settings: appearance_settings::AppearanceSettings,
+    config_manager: Arc<ConfigManager>, // Shared reference to the ConfigManager
 }
 
 impl SettingsView {
     pub fn new(config: AppConfig) -> Self {
-        let keybindings = config.preferences.keybindings.clone();
         let config_manager = Arc::new(tokio::runtime::Handle::current().block_on(async {
             ConfigManager::new().await.expect("Failed to initialize ConfigManager for settings")
         }));
 
+        let keybindings = config.preferences.keybindings.clone();
+        let appearance_prefs = config.preferences.ui.clone();
+
         let mut theme_editor = theme_editor::ThemeEditor::new(config_manager.clone());
+        // Load initial state for theme editor
         tokio::runtime::Handle::current().block_on(async {
             theme_editor.load_initial_state().await;
         });
 
-        let appearance_prefs = config.preferences.ui.clone();
-
         Self {
+            config,
+            selected_tab: SettingsTab::default(),
             keybinding_editor: keybinding_editor::KeybindingEditor::new(keybindings),
             theme_editor,
             appearance_settings: appearance_settings::AppearanceSettings::new(appearance_prefs),
-            yaml_theme_ui: yaml_theme_ui::YamlThemeUi::new(config_manager.clone()),
-            config_manager, // Store the dummy config manager
-            config,
-            selected_tab: SettingsTab::default(),
+            config_manager,
         }
     }
 
     pub async fn init(&mut self) {
         // Re-initialize components that need async setup
-        self.theme_editor = theme_editor::ThemeEditor::new(self.config_manager.clone());
-        self.theme_editor.init().await.unwrap();
-        self.yaml_theme_ui.init().await.unwrap();
-        // No async init needed for AppearanceSettings currently
+        // This method is currently not called in main.rs, but would be used for async setup
+        // if SettingsView itself needed to be initialized asynchronously.
+        // For now, `new` handles the async setup for sub-components.
+        info!("SettingsView init called (placeholder).");
     }
 
     pub fn update(&mut self, message: SettingsMessage) -> Command<SettingsMessage> {
@@ -104,45 +93,48 @@ impl SettingsView {
                 Command::none()
             }
             SettingsMessage::KeybindingEditor(msg) => {
-                self.keybinding_editor.update(msg);
+                let command = self.keybinding_editor.update(msg);
+                // Update the main config's preferences after keybinding editor updates
                 self.config.preferences.keybindings = self.keybinding_editor.keybindings.clone();
-                Command::none()
+                command.map(SettingsMessage::KeybindingEditor) // Propagate commands from sub-editor
             }
             SettingsMessage::ThemeEditor(msg) => {
-                self.theme_editor.update(msg)
-                    .map(SettingsMessage::ThemeEditor)
+                let command = self.theme_editor.update(msg);
+                // No direct config update here, ThemeEditor handles its own persistence via ConfigManager
+                command.map(SettingsMessage::ThemeEditor)
             }
             SettingsMessage::AppearanceSettings(msg) => {
                 self.appearance_settings.update(msg);
+                // Update the main config's preferences after appearance settings updates
                 self.config.preferences.ui = self.appearance_settings.preferences.clone();
                 Command::none()
             }
             SettingsMessage::SaveAll => {
-                let config_clone = self.config.clone();
+                let preferences_to_save = self.config.preferences.clone();
+                let config_manager_clone = self.config_manager.clone();
                 Command::perform(
                     async move {
-                        let config_manager = ConfigManager::new().await.expect("Failed to init ConfigManager for save");
-                        if let Err(e) = config_manager.update_preferences(config_clone.preferences).await {
-                            log::error!("Failed to save preferences: {}", e);
+                        if let Err(e) = config_manager_clone.update_preferences(preferences_to_save).await {
+                            error!("Failed to save preferences: {}", e);
                         } else {
-                            log::info!("All settings saved successfully.");
+                            info!("All settings saved successfully.");
                         }
                     },
-                    |_| SettingsMessage::CancelAll // Just a dummy message to indicate completion
+                    |_| SettingsMessage::CancelAll // A dummy message to signal completion, could be a more specific "Saved" message
                 )
             }
             SettingsMessage::CancelAll => {
                 // Reload original config to discard changes
                 self.config = AppConfig::load().unwrap_or_default();
                 self.keybinding_editor = keybinding_editor::KeybindingEditor::new(self.config.preferences.keybindings.clone());
-                let config_manager = Arc::new(tokio::runtime::Handle::current().block_on(async {
-                    ConfigManager::new().await.expect("Failed to initialize ConfigManager for settings reload")
-                }));
-                self.theme_editor = theme_editor::ThemeEditor::new(config_manager.clone());
-                tokio::runtime::Handle::current().block_on(async {
-                    self.theme_editor.load_initial_state().await;
-                });
                 self.appearance_settings = appearance_settings::AppearanceSettings::new(self.config.preferences.ui.clone());
+                // Re-initialize theme editor to load its state from disk
+                let config_manager_clone = self.config_manager.clone();
+                let mut theme_editor_reloaded = theme_editor::ThemeEditor::new(config_manager_clone);
+                tokio::runtime::Handle::current().block_on(async {
+                    theme_editor_reloaded.load_initial_state().await;
+                });
+                self.theme_editor = theme_editor_reloaded;
                 Command::none()
             }
         }
@@ -158,32 +150,40 @@ impl SettingsView {
             self.nav_button(SettingsTab::Editor, "Editor"),
             self.nav_button(SettingsTab::KeyBindings, "Keybindings"),
             self.nav_button(SettingsTab::Themes, "Themes"),
-            self.nav_button(SettingsTab::AI, "AI"),
             self.nav_button(SettingsTab::Plugins, "Plugins"),
-            self.nav_button(SettingsTab::Workflows, "Workflows"),
-            self.nav_button(SettingsTab::CloudSync, "Cloud Sync"),
-            self.nav_button(SettingsTab::Collaboration, "Collaboration"),
+            self.nav_button(SettingsTab::AI, "AI"),
             self.nav_button(SettingsTab::Privacy, "Privacy"),
             self.nav_button(SettingsTab::Performance, "Performance"),
+            self.nav_button(SettingsTab::Collaboration, "Collaboration"),
+            self.nav_button(SettingsTab::CloudSync, "Cloud Sync"),
+            self.nav_button(SettingsTab::Drive, "Drive"),
+            self.nav_button(SettingsTab::Workflows, "Workflows"),
+            self.nav_button(SettingsTab::About, "About"),
         ]
         .spacing(5)
         .width(Length::Fixed(180.0));
 
+        let current_tab_content: Element<SettingsMessage> = match self.selected_tab {
+            SettingsTab::General => text("General Settings Placeholder").size(20).into(),
+            SettingsTab::Appearance => self.appearance_settings.view().map(SettingsMessage::AppearanceSettings),
+            SettingsTab::Terminal => text("Terminal Settings Placeholder").size(20).into(),
+            SettingsTab::Editor => text("Editor Settings Placeholder").size(20).into(),
+            SettingsTab::KeyBindings => self.keybinding_editor.view().map(SettingsMessage::KeybindingEditor),
+            SettingsTab::Themes => self.theme_editor.view().map(SettingsMessage::ThemeEditor),
+            SettingsTab::Plugins => text("Plugins Settings Placeholder").size(20).into(),
+            SettingsTab::AI => text("AI Settings Placeholder").size(20).into(),
+            SettingsTab::Privacy => text("Privacy Settings Placeholder").size(20).into(),
+            SettingsTab::Performance => text("Performance Settings Placeholder").size(20).into(),
+            SettingsTab::Collaboration => text("Collaboration Settings Placeholder").size(20).into(),
+            SettingsTab::CloudSync => text("Cloud Sync Settings Placeholder").size(20).into(),
+            SettingsTab::Drive => text("Drive Settings Placeholder").size(20).into(),
+            SettingsTab::Workflows => text("Workflows Settings Placeholder").size(20).into(),
+            SettingsTab::About => text("About NeoTerm Placeholder").size(20).into(),
+        };
+
         let main_content = scrollable(
             column![
-                text("General Settings Placeholder").size(20),
-                self.appearance_settings.view().map(SettingsMessage::AppearanceSettings),
-                text("Terminal Settings Placeholder").size(20),
-                text("Editor Settings Placeholder").size(20),
-                self.keybinding_editor.view().map(SettingsMessage::KeybindingEditor),
-                self.theme_editor.view().map(SettingsMessage::ThemeEditor),
-                text("AI Settings Placeholder").size(20),
-                text("Plugins Settings Placeholder").size(20),
-                text("Workflows Settings Placeholder").size(20),
-                text("Cloud Sync Settings Placeholder").size(20),
-                text("Collaboration Settings Placeholder").size(20),
-                text("Privacy Settings Placeholder").size(20),
-                text("Performance Settings Placeholder").size(20),
+                current_tab_content,
             ]
             .spacing(20)
             .padding(20)
@@ -225,5 +225,5 @@ impl SettingsView {
 }
 
 pub fn init() {
-    log::info!("settings module loaded");
+    info!("settings module loaded");
 }
