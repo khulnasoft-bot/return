@@ -43,7 +43,7 @@ impl SyntaxTreeManager {
 
     /// Queries the syntax tree using a Tree-sitter query string.
     /// Returns a list of matched nodes.
-    pub async fn query_tree(&self, tree: &Tree, query_string: &str, language_name: &str) -> Result<Vec<Node<'_>>> {
+    pub async fn query_tree(&self, tree: &Tree, query_string: &str, language_name: &str, code: &str) -> Result<Vec<Node<'_>>> {
         let language = self.language_manager.get_language(language_name).unwrap();
 
         let query = tree_sitter::Query::new(language, query_string)?;

@@ -1,228 +1,169 @@
-use tokio::sync::mpsc;
+use anyhow::{anyhow, Result};
+use log::{error, info, warn};
 use std::collections::HashMap;
-use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command as TokioCommand;
-use uuid::Uuid;
-use anyhow::Result;
-use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
 pub mod pty;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Command {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub executable: String,
-    pub args: Vec<String>,
-    pub env: HashMap<String, String>,
-    pub working_dir: Option<String>,
-    pub output_format: CommandOutputFormat,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum CommandOutputFormat {
-    PlainText,
-    Markdown,
-    Json,
-    // Add more formats like HTML, YAML, etc.
-}
-
-#[derive(Debug, Clone)]
-pub enum CommandEvent {
-    /// A command has started execution.
-    Started { id: String, command_line: String },
-    /// New output (stdout or stderr) from a command.
-    Output { id: String, data: Vec<u8>, is_stderr: bool },
-    /// A command has completed execution.
-    Completed { id: String, exit_code: Option<i32> },
-    /// A command failed to start or encountered an error during execution.
-    Error { id: String, message: String },
-}
-
+/// Manages the execution and lifecycle of commands via PTY sessions.
 pub struct CommandManager {
-    event_sender: mpsc::Sender<CommandEvent>,
-    // Add state for tracking running commands, their PTYs, etc.
-    // For example: HashMap<String, pty::PtySession>
+    active_ptys: Arc<Mutex<HashMap<String, pty::PtySession>>>, // command_id -> PtySession
 }
 
 impl CommandManager {
-    pub fn new(event_sender: mpsc::Sender<CommandEvent>) -> Self {
-        Self { event_sender }
-    }
-
-    pub async fn init(&self) -> Result<()> {
-        log::info!("Command manager initialized.");
-        Ok(())
-    }
-
-    /// Executes a command.
-    pub async fn execute_command(&self, command: Command) -> Result<()> {
-        let command_id = command.id.clone();
-        let command_line = format!("{} {}", command.executable, command.args.join(" "));
-        log::info!("Executing command: {}", command_line);
-
-        self.event_sender.send(CommandEvent::Started {
-            id: command_id.clone(),
-            command_line: command_line.clone(),
-        }).await?;
-
-        let sender_clone = self.event_sender.clone();
-        tokio::spawn(async move {
-            match pty::PtySession::spawn(
-                &command.executable,
-                &command.args,
-                command.working_dir.as_deref(),
-                &command.env,
-            ).await {
-                Ok(mut pty_session) => {
-                    let command_id_clone = command_id.clone();
-                    let sender_clone_output = sender_clone.clone();
-                    tokio::spawn(async move {
-                        while let Some(output) = pty_session.read_output().await {
-                            let _ = sender_clone_output.send(CommandEvent::Output {
-                                id: command_id_clone.clone(),
-                                data: output.data,
-                                is_stderr: output.is_stderr,
-                            }).await;
-                        }
-                    });
-
-                    match pty_session.wait().await {
-                        Ok(exit_status) => {
-                            let exit_code = exit_status.code();
-                            log::info!("Command {} completed with exit code {:?}", command_id, exit_code);
-                            let _ = sender_clone.send(CommandEvent::Completed {
-                                id: command_id,
-                                exit_code,
-                            }).await;
-                        },
-                        Err(e) => {
-                            log::error!("Command {} failed to wait: {:?}", command_id, e);
-                            let _ = sender_clone.send(CommandEvent::Error {
-                                id: command_id,
-                                message: format!("Failed to wait for command: {}", e),
-                            }).await;
-                        }
-                    }
-                },
-                Err(e) => {
-                    log::error!("Failed to spawn command {}: {:?}", command_id, e);
-                    let _ = sender_clone.send(CommandEvent::Error {
-                        id: command_id,
-                        message: format!("Failed to spawn command: {}", e),
-                    }).await;
-                }
-            }
-        });
-
-        Ok(())
-    }
-
-    /// Sends input to a running command's PTY.
-    pub async fn send_input(&self, command_id: &str, input: &[u8]) -> Result<()> {
-        // In a real implementation, you'd look up the PtySession by command_id
-        // and then call its `write_input` method.
-        // For this stub, we'll just log it.
-        log::debug!("Sending input to command {}: {:?}", command_id, String::from_utf8_lossy(input));
-        // Example: self.running_commands.get_mut(command_id).map(|pty| pty.write_input(input).await);
-        Ok(())
-    }
-
-    /// Terminates a running command.
-    pub async fn terminate_command(&self, command_id: &str) -> Result<()> {
-        // In a real implementation, you'd look up the PtySession by command_id
-        // and then call its `kill` method.
-        log::info!("Terminating command: {}", command_id);
-        // Example: self.running_commands.get_mut(command_id).map(|pty| pty.kill().await);
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum CommandMessage {
-    Output(String),
-    Error(String),
-    Exit(i32),
-    Start(Uuid),
-}
-
-#[derive(Debug, Clone)]
-pub struct CommandExecutor {
-    // This struct might hold configuration for command execution,
-    // like default working directory, environment variables, etc.
-}
-
-impl CommandExecutor {
     pub fn new() -> Self {
-        CommandExecutor {}
+        Self {
+            active_ptys: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
-    pub fn execute_command(
-        &self,
-        command: &str,
-        args: &[String],
-        working_directory: Option<String>,
-        tx: mpsc::UnboundedSender<String>, // Sender for output/error
-    ) -> Uuid {
-        let command_id = Uuid::new_v4();
-        let cmd_str = format!("{} {}", command, args.join(" "));
-        println!("Executing command [{}]: {}", command_id, cmd_str);
+    /// Executes a command in a new PTY session.
+    /// Returns a unique command ID and the PtySession.
+    pub async fn execute_command(&self, command: &str, args: &[&str]) -> Result<(String, pty::PtySession)> {
+        info!("Executing command: {} with args: {:?}", command, args);
+        let command_id = uuid::Uuid::new_v4().to_string();
 
-        let mut cmd = TokioCommand::new(command);
-        cmd.args(args);
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
+        let pty_session = pty::PtySession::new(command, args).await?;
+        let pty_session_clone = pty_session.clone(); // Clone for storage
 
-        if let Some(wd) = working_directory {
-            cmd.current_dir(wd);
-        }
+        let mut active_ptys = self.active_ptys.lock().await;
+        active_ptys.insert(command_id.clone(), pty_session_clone);
 
+        info!("Command '{}' started with ID: {}", command, command_id);
+
+        // Spawn a task to clean up the PTY session when the command finishes
+        let active_ptys_clone = self.active_ptys.clone();
+        let command_id_clone = command_id.clone();
         tokio::spawn(async move {
-            let _ = tx.send(format!("$ {}\n", cmd_str)); // Echo command to output
-
-            match cmd.spawn() {
-                Ok(mut child) => {
-                    let stdout = child.stdout.take().expect("Failed to take stdout");
-                    let stderr = child.stderr.take().expect("Failed to take stderr");
-
-                    let mut stdout_reader = BufReader::new(stdout).lines();
-                    let mut stderr_reader = BufReader::new(stderr).lines();
-
-                    loop {
-                        tokio::select! {
-                            Ok(Some(line)) = stdout_reader.next_line() => {
-                                let _ = tx.send(line + "\n");
-                            }
-                            Ok(Some(line)) = stderr_reader.next_line() => {
-                                let _ = tx.send(format!("ERROR: {}\n", line));
-                            }
-                            status = child.wait() => {
-                                match status {
-                                    Ok(exit_status) => {
-                                        let code = exit_status.code().unwrap_or(-1);
-                                        let _ = tx.send(format!("Command exited with code: {}\n", code));
-                                    }
-                                    Err(e) => {
-                                        let _ = tx.send(format!("Failed to wait for command: {}\n", e));
-                                    }
-                                }
-                                break;
-                            }
-                            else => break, // All streams closed and child exited
-                        }
-                    }
-                }
-                Err(e) => {
-                    let _ = tx.send(format!("Failed to spawn command '{}': {}\n", command, e));
-                }
+            let exit_status = pty_session.wait().await;
+            match exit_status {
+                Ok(status) => info!("Command {} (ID: {}) finished with status: {:?}", command, command_id_clone, status),
+                Err(e) => error!("Error waiting for command {} (ID: {}): {}", command, command_id_clone, e),
             }
+            let mut active_ptys = active_ptys_clone.lock().await;
+            active_ptys.remove(&command_id_clone);
+            info!("PTY session for command ID {} removed.", command_id_clone);
         });
 
-        command_id
+        Ok((command_id, pty_session))
+    }
+
+    /// Sends input to a running command's PTY session.
+    pub async fn send_input(&self, command_id: &str, input: &str) -> Result<()> {
+        let active_ptys = self.active_ptys.lock().await;
+        if let Some(pty_session) = active_ptys.get(command_id) {
+            info!("Sending input to command ID {}: {:?}", command_id, input);
+            pty_session.write_input(input).await
+        } else {
+            warn!("Command with ID {} not found or not active.", command_id);
+            Err(anyhow!("Command with ID {} not found or not active.", command_id))
+        }
+    }
+
+    /// Terminates a running command's PTY session.
+    pub async fn terminate_command(&self, command_id: &str) -> Result<()> {
+        let mut active_ptys = self.active_ptys.lock().await;
+        if let Some(pty_session) = active_ptys.remove(command_id) {
+            info!("Terminating command with ID: {}", command_id);
+            pty_session.terminate().await?;
+            info!("Command with ID {} terminated successfully.", command_id);
+            Ok(())
+        } else {
+            warn!("Command with ID {} not found or not active.", command_id);
+            Err(anyhow!("Command with ID {} not found or not active.", command_id))
+        }
+    }
+
+    /// Lists all currently active command IDs.
+    pub async fn list_active_commands(&self) -> Vec<String> {
+        let active_ptys = self.active_ptys.lock().await;
+        active_ptys.keys().cloned().collect()
     }
 }
 
 pub fn init() {
-    println!("command module loaded");
+    info!("command module loaded");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::time::{sleep, Duration};
+
+    #[tokio::test]
+    async fn test_execute_command_and_read_output() {
+        let manager = CommandManager::new();
+        let (command_id, mut pty_session) = manager.execute_command("echo", &["hello world"]).await.unwrap();
+
+        let mut output = String::new();
+        let mut buf = vec![0; 1024];
+        let n = pty_session.read_output(&mut buf).await.unwrap();
+        output.push_str(&String::from_utf8_lossy(&buf[..n]));
+
+        assert!(output.contains("hello world"));
+
+        // Ensure the command is cleaned up
+        sleep(Duration::from_millis(100)).await; // Give cleanup task time to run
+        let active_commands = manager.list_active_commands().await;
+        assert!(!active_commands.contains(&command_id));
+    }
+
+    #[tokio::test]
+    async fn test_send_input_to_command() {
+        let manager = CommandManager::new();
+        // Use a command that waits for input, like `cat` on Unix or `more` on Windows
+        #[cfg(unix)]
+        let (command_id, mut pty_session) = manager.execute_command("cat", &[]).await.unwrap();
+        #[cfg(windows)]
+        let (command_id, mut pty_session) = manager.execute_command("more", &[]).await.unwrap();
+
+        manager.send_input(&command_id, "test input\n").await.unwrap();
+
+        let mut output = String::new();
+        let mut buf = vec![0; 1024];
+        let n = pty_session.read_output(&mut buf).await.unwrap();
+        output.push_str(&String::from_utf8_lossy(&buf[..n]));
+
+        assert!(output.contains("test input"));
+
+        manager.terminate_command(&command_id).await.unwrap();
+        let active_commands = manager.list_active_commands().await;
+        assert!(!active_commands.contains(&command_id));
+    }
+
+    #[tokio::test]
+    async fn test_terminate_command() {
+        let manager = CommandManager::new();
+        // Use a long-running command
+        #[cfg(unix)]
+        let (command_id, _) = manager.execute_command("sleep", &["5"]).await.unwrap();
+        #[cfg(windows)]
+        let (command_id, _) = manager.execute_command("ping", &["-n", "5", "127.0.0.1"]).await.unwrap();
+
+        let active_commands = manager.list_active_commands().await;
+        assert!(active_commands.contains(&command_id));
+
+        manager.terminate_command(&command_id).await.unwrap();
+
+        let active_commands = manager.list_active_commands().await;
+        assert!(!active_commands.contains(&command_id));
+    }
+
+    #[tokio::test]
+    async fn test_send_input_to_non_existent_command() {
+        let manager = CommandManager::new();
+        let result = manager.send_input("non-existent-id", "input").await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "Command with ID non-existent-id not found or not active.");
+    }
+
+    #[tokio::test]
+    async fn test_terminate_non_existent_command() {
+        let manager = CommandManager::new();
+        let result = manager.terminate_command("non-existent-id").await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "Command with ID non-existent-id not found or not active.");
+    }
 }

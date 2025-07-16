@@ -1,356 +1,624 @@
-use anyhow::Result;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
-use tokio_tungstenite::{accept_async, tungstenite::Message};
-use futures_util::{StreamExt, SinkExt};
-use serde::{Serialize, Deserialize};
-use std::net::SocketAddr;
-use uuid::Uuid;
-use chrono::{DateTime, Utc};
-use log::{info, warn, error};
+use anyhow::{anyhow, Result};
+use async_trait::async_trait;
+use futures_util::{
+    stream::{SplitSink, SplitStream},
+    SinkExt, StreamExt,
+};
+use log::{error, info, warn};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
+use tokio_tungstenite::{accept_async, connect_async, tungstenite::Message, WebSocketStream};
+use url::Url;
 
-/// Events related to collaboration sessions.
+/// Represents a unique session ID.
+pub type SessionId = String;
+
+/// Represents a participant in a collaboration session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct Participant {
+    pub id: String,   // Unique ID for the participant
+    pub name: String, // Display name
+    pub is_host: bool,
+}
+
+/// Messages exchanged during a collaboration session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum CollaborationMessage {
+    /// Sent by a new participant joining the session.
+    Hello {
+        participant: Participant,
+    },
+    /// Sent by the host to acknowledge a new participant and provide session info.
+    Welcome {
+        session_id: SessionId,
+        host: Participant,
+        active_participants: Vec<Participant>,
+    },
+    /// Sent when a participant joins or leaves.
+    ParticipantUpdate {
+        participants: Vec<Participant>,
+    },
+    /// Text content update (e.g., code, document).
+    TextUpdate {
+        file_path: String,
+        content: String,
+    },
+    /// Cursor position update.
+    CursorUpdate {
+        participant_id: String,
+        line: usize,
+        column: usize,
+    },
+    /// Command execution request (from client to host).
+    CommandRequest {
+        command: String,
+    },
+    /// Command execution result (from host to client).
+    CommandResult {
+        command: String,
+        output: String,
+        success: bool,
+    },
+    /// General chat message.
+    Chat {
+        sender_id: String,
+        message: String,
+    },
+    /// Error message.
+    Error {
+        message: String,
+    },
+    /// Signal to close the session.
+    Close,
+}
+
+/// Events emitted by the SessionSharingManager for the UI or other modules.
 #[derive(Debug, Clone)]
-pub enum CollaborationEvent {
-    /// A collaboration session has started.
-    SessionStarted { address: SocketAddr },
-    /// A collaboration session has ended.
-    SessionEnded,
-    /// A peer has connected to the session.
-    PeerConnected { peer_id: String },
-    /// A peer has disconnected from the session.
-    PeerDisconnected { peer_id: String },
-    /// Text content has been updated by a peer.
-    TextUpdate { content: String, cursor_pos: usize },
-    /// A command has been executed by a peer.
-    CommandExecuted { command: String },
-    /// An error occurred in the collaboration session.
+pub enum SessionSharingEvent {
+    SessionStarted {
+        session_id: SessionId,
+        is_host: bool,
+    },
+    SessionEnded {
+        session_id: SessionId,
+    },
+    ParticipantJoined {
+        participant: Participant,
+    },
+    ParticipantLeft {
+        participant: Participant,
+    },
+    MessageReceived(CollaborationMessage),
     Error(String),
 }
 
-/// Manages real-time collaboration sessions.
-pub struct SessionSharingManager {
-    event_sender: mpsc::Sender<CollaborationEvent>,
-    // State for active session, connected peers, shared documents, etc.
-    is_session_active: bool,
-    connected_peers: HashMap<String, SocketAddr>,
-    active_sessions: HashMap<Uuid, SharedSession>,
+/// Represents an active shared session, managed by the host.
+#[derive(Debug)]
+pub struct SharedSession {
+    pub id: SessionId,
+    pub host: Participant,
+    pub participants: Arc<RwLock<HashMap<String, Participant>>>, // participant_id -> Participant
+    pub message_tx: broadcast::Sender<CollaborationMessage>, // For broadcasting messages to all participants
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SharedSession {
-    pub id: Uuid,
-    pub host_user_id: String,
-    pub title: String,
-    pub created_at: DateTime<Utc>,
-    pub active_users: Vec<String>,
-    // In a real system, this would contain a snapshot or stream of terminal state
-    // For simplicity, we'll just track some metadata.
-    pub last_activity: DateTime<Utc>,
+impl SharedSession {
+    pub fn new(host: Participant) -> Self {
+        let id = uuid::Uuid::new_v4().to_string();
+        let (tx, _rx) = broadcast::channel(100); // Channel for broadcasting messages
+        let mut participants = HashMap::new();
+        participants.insert(host.id.clone(), host.clone());
+        Self {
+            id,
+            host,
+            participants: Arc::new(RwLock::new(participants)),
+            message_tx: tx,
+        }
+    }
+
+    pub async fn add_participant(&self, participant: Participant) {
+        let mut participants = self.participants.write().await;
+        participants.insert(participant.id.clone(), participant);
+        info!("Participant added. Current participants: {:?}", participants.keys().collect::<Vec<_>>());
+        self.notify_participants_update().await;
+    }
+
+    pub async fn remove_participant(&self, participant_id: &str) {
+        let mut participants = self.participants.write().await;
+        participants.remove(participant_id);
+        info!("Participant removed. Current participants: {:?}", participants.keys().collect::<Vec<_>>());
+        self.notify_participants_update().await;
+    }
+
+    pub async fn get_participants_list(&self) -> Vec<Participant> {
+        self.participants.read().await.values().cloned().collect()
+    }
+
+    async fn notify_participants_update(&self) {
+        let participants_list = self.get_participants_list().await;
+        let msg = CollaborationMessage::ParticipantUpdate {
+            participants: participants_list,
+        };
+        if let Err(e) = self.message_tx.send(msg) {
+            error!("Failed to broadcast participant update: {}", e);
+        }
+    }
+}
+
+pub struct SessionSharingManager {
+    is_host_active: Arc<RwLock<bool>>,
+    active_session: Arc<RwLock<Option<Arc<SharedSession>>>>,
+    event_sender: broadcast::Sender<SessionSharingEvent>,
+    _event_receiver: broadcast::Receiver<SessionSharingEvent>, // Keep one receiver to prevent channel from closing
+    my_participant_id: String,
+    my_participant_name: String,
 }
 
 impl SessionSharingManager {
-    pub fn new(event_sender: mpsc::Sender<CollaborationEvent>) -> Self {
+    pub fn new(my_participant_id: String, my_participant_name: String) -> Self {
+        let (tx, rx) = broadcast::channel(100);
         Self {
-            event_sender,
-            is_session_active: false,
-            connected_peers: HashMap::new(),
-            active_sessions: HashMap::new(),
+            is_host_active: Arc::new(RwLock::new(false)),
+            active_session: Arc::new(RwLock::new(None)),
+            event_sender: tx,
+            _event_receiver: rx,
+            my_participant_id,
+            my_participant_name,
         }
     }
 
-    pub async fn init(&self) -> Result<()> {
-        info!("Collaboration session sharing manager initialized.");
-        Ok(())
+    /// Subscribes to session sharing events.
+    pub fn subscribe_events(&self) -> broadcast::Receiver<SessionSharingEvent> {
+        self.event_sender.subscribe()
     }
 
-    /// Starts a new collaboration session.
-    pub async fn start_session(&mut self, bind_address: SocketAddr) -> Result<()> {
-        if self.is_session_active {
-            warn!("A collaboration session is already active.");
-            return Err(anyhow!("Session already active"));
+    /// Starts a new collaboration session as the host.
+    pub async fn start_host_session(&self, bind_address: &str) -> Result<SessionId> {
+        let mut is_host_active = self.is_host_active.write().await;
+        if *is_host_active {
+            return Err(anyhow!("Host session already active."));
         }
 
-        info!("Starting collaboration session on {}", bind_address);
-        // Simulate network listener setup
-        self.is_session_active = true;
-        self.event_sender.send(CollaborationEvent::SessionStarted { address: bind_address }).await?;
-        Ok(())
-    }
+        let host_participant = Participant {
+            id: self.my_participant_id.clone(),
+            name: self.my_participant_name.clone(),
+            is_host: true,
+        };
+        let session = Arc::new(SharedSession::new(host_participant.clone()));
+        let session_id = session.id.clone();
 
-    /// Ends the current collaboration session.
-    pub async fn end_session(&mut self) -> Result<()> {
-        if !self.is_session_active {
-            warn!("No active collaboration session to end.");
-            return Err(anyhow!("No active session"));
-        }
+        *self.active_session.write().await = Some(session.clone());
+        *is_host_active = true;
 
-        info!("Ending collaboration session.");
-        // Simulate network listener teardown, disconnect peers
-        self.is_session_active = false;
-        self.connected_peers.clear();
-        self.active_sessions.clear();
-        self.event_sender.send(CollaborationEvent::SessionEnded).await?;
-        Ok(())
-    }
-
-    /// Simulates a peer connecting to the session.
-    pub async fn simulate_peer_connect(&mut self, peer_id: String, peer_addr: SocketAddr) -> Result<()> {
-        if !self.is_session_active {
-            return Err(anyhow!("No active session to connect to."));
-        }
-        info!("Simulating peer {} connecting from {}", peer_id, peer_addr);
-        self.connected_peers.insert(peer_id.clone(), peer_addr);
-        self.event_sender.send(CollaborationEvent::PeerConnected { peer_id }).await?;
-        Ok(())
-    }
-
-    /// Simulates a peer disconnecting from the session.
-    pub async fn simulate_peer_disconnect(&mut self, peer_id: String) -> Result<()> {
-        if !self.is_session_active {
-            return Err(anyhow!("No active session."));
-        }
-        if self.connected_peers.remove(&peer_id).is_some() {
-            info!("Simulating peer {} disconnecting.", peer_id);
-            self.event_sender.send(CollaborationEvent::PeerDisconnected { peer_id }).await?;
-        } else {
-            warn!("Attempted to disconnect unknown peer: {}", peer_id);
-        }
-        Ok(())
-    }
-
-    /// Sends a text update to all connected peers (mock).
-    pub async fn send_text_update(&self, content: String, cursor_pos: usize) -> Result<()> {
-        if !self.is_session_active {
-            return Err(anyhow!("No active session to send updates."));
-        }
-        info!("Sending text update (mock): len={}, cursor={}", content.len(), cursor_pos);
-        // In a real system, this would send data over network to peers
-        // For now, just log and potentially send a local event for testing
-        self.event_sender.send(CollaborationEvent::TextUpdate { content, cursor_pos }).await?;
-        Ok(())
-    }
-
-    /// Sends a command execution event to all connected peers (mock).
-    pub async fn send_command_executed(&self, command: String) -> Result<()> {
-        if !self.is_session_active {
-            return Err(anyhow!("No active session to send commands."));
-        }
-        info!("Sending command executed event (mock): {}", command);
-        self.event_sender.send(CollaborationEvent::CommandExecuted { command }).await?;
-        Ok(())
-    }
-
-    pub async fn start_host_session(&self, addr: SocketAddr) -> Result<()> {
-        let listener = TcpListener::bind(addr).await?;
-        info!("Listening for collaboration connections on {}", addr);
-        self.event_sender.send(CollaborationEvent::SessionStarted { address: addr }).await?;
-
-        let sender_clone = self.event_sender.clone();
-        tokio::spawn(async move {
-            while let Ok((stream, peer_addr)) = listener.accept().await {
-                info!("New peer connected from: {}", peer_addr);
-                let peer_id = format!("{}", peer_addr); // Simple ID for now
-                let _ = sender_clone.send(CollaborationEvent::PeerConnected { peer_id: peer_id.clone() }).await;
-                
-                let ws_stream = match accept_async(stream).await {
-                    Ok(ws) => ws,
-                    Err(e) => {
-                        error!("Error during websocket handshake: {:?}", e);
-                        let _ = sender_clone.send(CollaborationEvent::Error(format!("Handshake error: {}", e))).await;
-                        continue;
-                    }
-                };
-
-                let (mut write, mut read) = ws_stream.split();
-                let peer_id_clone = peer_id.clone();
-                let sender_clone_2 = sender_clone.clone();
-
-                tokio::spawn(async move {
-                    while let Some(message) = read.next().await {
-                        match message {
-                            Ok(msg) => {
-                                if msg.is_text() {
-                                    let text = msg.to_text().unwrap();
-                                    match serde_json::from_str::<CollaborationMessage>(text) {
-                                        Ok(collab_msg) => {
-                                            match collab_msg {
-                                                CollaborationMessage::Hello { peer_id: _ } => { /* Already handled by PeerConnected */ },
-                                                CollaborationMessage::TextUpdate { content, cursor_pos } => {
-                                                    let _ = sender_clone_2.send(CollaborationEvent::TextUpdate { content, cursor_pos }).await;
-                                                },
-                                                CollaborationMessage::Command { command } => {
-                                                    let _ = sender_clone_2.send(CollaborationEvent::CommandExecuted { command }).await;
-                                                },
-                                                CollaborationMessage::Goodbye { peer_id: _ } => {
-                                                    info!("Peer {} sent goodbye.", peer_id_clone);
-                                                    break; // Exit loop on goodbye
-                                                },
-                                            }
-                                        },
-                                        Err(e) => error!("Failed to parse collaboration message: {:?} from {}", e, text),
-                                    }
-                                }
-                            },
-                            Err(e) => {
-                                error!("Error receiving message from peer {}: {:?}", peer_id_clone, e);
-                                break;
-                            }
-                        }
-                    }
-                    info!("Peer {} disconnected.", peer_id_clone);
-                    let _ = sender_clone_2.send(CollaborationEvent::PeerDisconnected { peer_id: peer_id_clone }).await;
-                });
-            }
-            let _ = sender_clone.send(CollaborationEvent::SessionEnded).await;
-            info!("Host session ended.");
-        });
-        Ok(())
-    }
-
-    pub async fn connect_to_session(&self, addr: SocketAddr) -> Result<()> {
-        info!("Attempting to connect to collaboration session at {}", addr);
-        let (ws_stream, _) = tokio_tungstenite::connect_async(format!("ws://{}", addr)).await?;
-        info!("Connected to collaboration session at {}", addr);
-
-        let (mut write, mut read) = ws_stream.split();
-        let sender_clone = self.event_sender.clone();
-        let peer_id = uuid::Uuid::new_v4().to_string(); // Client's own ID
-
-        // Send initial Hello message
-        let hello_msg = serde_json::to_string(&CollaborationMessage::Hello { peer_id: peer_id.clone() })?;
-        write.send(Message::Text(hello_msg)).await?;
-
-        // Spawn task to send updates (e.g., from local editor changes)
-        let mut tx_channel_rx = self.event_sender.subscribe(); // Assuming event_sender is a broadcast channel
-        tokio::spawn(async move {
-            while let Ok(event) = tx_channel_rx.recv().await {
-                match event {
-                    CollaborationEvent::TextUpdate { content, cursor_pos } => {
-                        let msg = CollaborationMessage::TextUpdate { content, cursor_pos };
-                        if let Ok(json_msg) = serde_json::to_string(&msg) {
-                            if let Err(e) = write.send(Message::Text(json_msg)).await {
-                                error!("Failed to send text update: {:?}", e);
-                                break;
-                            }
-                        }
-                    },
-                    CollaborationEvent::CommandExecuted { command } => {
-                        let msg = CollaborationMessage::Command { command };
-                        if let Ok(json_msg) = serde_json::to_string(&msg) {
-                            if let Err(e) = write.send(Message::Text(json_msg)).await {
-                                error!("Failed to send command: {:?}", e);
-                                break;
-                            }
-                        }
-                    },
-                    _ => {} // Ignore other events for sending
-                }
-            }
-            info!("Client sender task stopped.");
+        info!("Starting host session with ID: {}", session_id);
+        let _ = self.event_sender.send(SessionSharingEvent::SessionStarted {
+            session_id: session_id.clone(),
+            is_host: true,
         });
 
-        // Spawn task to receive updates from host
-        let sender_clone_2 = sender_clone.clone();
+        let listener = TcpListener::bind(bind_address).await?;
+        info!("Listening for WebSocket connections on {}", bind_address);
+
+        let session_clone = session.clone();
+        let event_sender_clone = self.event_sender.clone();
+        let is_host_active_clone = self.is_host_active.clone();
+
         tokio::spawn(async move {
-            while let Some(message) = read.next().await {
-                match message {
-                    Ok(msg) => {
-                        if msg.is_text() {
-                            let text = msg.to_text().unwrap();
-                            match serde_json::from_str::<CollaborationMessage>(text) {
-                                Ok(collab_msg) => {
-                                    match collab_msg {
-                                        CollaborationMessage::TextUpdate { content, cursor_pos } => {
-                                            let _ = sender_clone_2.send(CollaborationEvent::TextUpdate { content, cursor_pos }).await;
-                                        },
-                                        CollaborationMessage::Command { command } => {
-                                            let _ = sender_clone_2.send(CollaborationEvent::CommandExecuted { command }).await;
-                                        },
-                                        CollaborationMessage::Hello { peer_id: host_id } => {
-                                            info!("Received Hello from host: {}", host_id);
-                                            let _ = sender_clone_2.send(CollaborationEvent::PeerConnected { peer_id: host_id }).await;
-                                        },
-                                        CollaborationMessage::Goodbye { peer_id: host_id } => {
-                                            info!("Host {} sent goodbye.", host_id);
-                                            let _ = sender_clone_2.send(CollaborationEvent::PeerDisconnected { peer_id: host_id }).await;
-                                            break;
-                                        },
-                                    }
-                                },
-                                Err(e) => error!("Failed to parse collaboration message from host: {:?} from {}", e, text),
+            while *is_host_active_clone.read().await {
+                match listener.accept().await {
+                    Ok((stream, addr)) => {
+                        info!("New WebSocket connection from: {}", addr);
+                        let session_arc = session_clone.clone();
+                        let event_tx = event_sender_clone.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = Self::handle_connection(stream, session_arc, event_tx).await {
+                                error!("Error handling WebSocket connection from {}: {}", addr, e);
                             }
-                        }
-                    },
+                        });
+                    }
                     Err(e) => {
-                        error!("Error receiving message from host: {:?}", e);
+                        error!("Error accepting TCP connection: {}", e);
+                        // If listener fails, perhaps stop hosting
+                        let _ = event_sender_clone.send(SessionSharingEvent::Error(format!("Host listener error: {}", e)));
                         break;
                     }
                 }
             }
-            info!("Client receiver task stopped.");
-            let _ = sender_clone_2.send(CollaborationEvent::SessionEnded).await;
+            info!("Host session listener stopped.");
+            let _ = event_sender_clone.send(SessionSharingEvent::SessionEnded { session_id: session_clone.id.clone() });
+            *is_host_active_clone.write().await = false;
+        });
+
+        Ok(session_id)
+    }
+
+    /// Connects to an existing collaboration session as a client.
+    pub async fn connect_to_session(&self, host_url: &str, session_id: &str) -> Result<()> {
+        let mut is_host_active = self.is_host_active.write().await;
+        if *is_host_active {
+            return Err(anyhow!("Cannot connect as client while hosting a session."));
+        }
+        if self.active_session.read().await.is_some() {
+            return Err(anyhow!("Already connected to a session."));
+        }
+
+        let url = format!("ws://{}/{}", host_url, session_id);
+        info!("Connecting to WebSocket host: {}", url);
+
+        let (ws_stream, _) = connect_async(Url::parse(&url)?).await?;
+        info!("WebSocket connection established.");
+
+        let (mut write, mut read) = ws_stream.split();
+
+        let my_participant = Participant {
+            id: self.my_participant_id.clone(),
+            name: self.my_participant_name.clone(),
+            is_host: false,
+        };
+
+        // Send Hello message
+        let hello_msg = CollaborationMessage::Hello {
+            participant: my_participant.clone(),
+        };
+        write.send(Message::Text(serde_json::to_string(&hello_msg)?)).await?;
+
+        let event_sender_clone = self.event_sender.clone();
+        let active_session_clone = self.active_session.clone();
+
+        // Handle incoming messages from the host
+        tokio::spawn(async move {
+            while let Some(msg_res) = read.next().await {
+                match msg_res {
+                    Ok(Message::Text(text)) => {
+                        match serde_json::from_str::<CollaborationMessage>(&text) {
+                            Ok(msg) => {
+                                match msg {
+                                    CollaborationMessage::Welcome { session_id, host, active_participants } => {
+                                        info!("Received Welcome from host. Session ID: {}", session_id);
+                                        let session = Arc::new(SharedSession {
+                                            id: session_id.clone(),
+                                            host,
+                                            participants: Arc::new(RwLock::new(active_participants.into_iter().map(|p| (p.id.clone(), p)).collect())),
+                                            message_tx: broadcast::channel(100).0, // Client doesn't broadcast, just receives
+                                        });
+                                        *active_session_clone.write().await = Some(session.clone());
+                                        let _ = event_sender_clone.send(SessionSharingEvent::SessionStarted {
+                                            session_id: session_id.clone(),
+                                            is_host: false,
+                                        });
+                                    },
+                                    CollaborationMessage::ParticipantUpdate { participants } => {
+                                        if let Some(session) = active_session_clone.read().await.as_ref() {
+                                            let mut current_participants = session.participants.write().await;
+                                            let old_participants: HashMap<String, Participant> = current_participants.drain().collect();
+                                            for p in participants {
+                                                if old_participants.get(&p.id).is_none() {
+                                                    let _ = event_sender_clone.send(SessionSharingEvent::ParticipantJoined { participant: p.clone() });
+                                                }
+                                                current_participants.insert(p.id.clone(), p);
+                                            }
+                                            for p in old_participants.values() {
+                                                if current_participants.get(&p.id).is_none() {
+                                                    let _ = event_sender_clone.send(SessionSharingEvent::ParticipantLeft { participant: p.clone() });
+                                                }
+                                            }
+                                        }
+                                        let _ = event_sender_clone.send(SessionSharingEvent::MessageReceived(msg));
+                                    },
+                                    CollaborationMessage::Close => {
+                                        info!("Host closed the session.");
+                                        if let Some(session) = active_session_clone.read().await.take() {
+                                            let _ = event_sender_clone.send(SessionSharingEvent::SessionEnded { session_id: session.id.clone() });
+                                        }
+                                        break;
+                                    },
+                                    _ => {
+                                        let _ = event_sender_clone.send(SessionSharingEvent::MessageReceived(msg));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to deserialize WebSocket message: {}", e);
+                                let _ = event_sender_clone.send(SessionSharingEvent::Error(format!("Deserialization error: {}", e)));
+                            }
+                        }
+                    }
+                    Ok(Message::Binary(_)) => warn!("Received binary message, not supported yet."),
+                    Ok(Message::Ping(_)) => info!("Received WebSocket ping."),
+                    Ok(Message::Pong(_)) => info!("Received WebSocket pong."),
+                    Ok(Message::Close(_)) => {
+                        info!("WebSocket connection closed by peer.");
+                        if let Some(session) = active_session_clone.read().await.take() {
+                            let _ = event_sender_clone.send(SessionSharingEvent::SessionEnded { session_id: session.id.clone() });
+                        }
+                        break;
+                    }
+                    Err(e) => {
+                        error!("WebSocket read error: {}", e);
+                        let _ = event_sender_clone.send(SessionSharingEvent::Error(format!("WebSocket read error: {}", e)));
+                        if let Some(session) = active_session_clone.read().await.take() {
+                            let _ = event_sender_clone.send(SessionSharingEvent::SessionEnded { session_id: session.id.clone() });
+                        }
+                        break;
+                    }
+                }
+            }
+            info!("Client WebSocket handler stopped.");
         });
 
         Ok(())
     }
 
-    pub fn create_session(&mut self, host_user_id: String, title: String) -> Result<Uuid, String> {
-        let session_id = Uuid::new_v4();
-        let now = Utc::now();
-        let session = SharedSession {
-            id: session_id,
-            host_user_id: host_user_id.clone(),
-            title,
-            created_at: now,
-            active_users: vec![host_user_id],
-            last_activity: now,
-        };
-        self.active_sessions.insert(session_id, session);
-        Ok(session_id)
-    }
-
-    pub fn join_session(&mut self, session_id: Uuid, user_id: String) -> Result<(), String> {
-        if let Some(session) = self.active_sessions.get_mut(&session_id) {
-            if !session.active_users.contains(&user_id) {
-                session.active_users.push(user_id.clone());
-                session.last_activity = Utc::now();
-                Ok(())
+    /// Sends a message to the active session. Only applicable for clients or host broadcasting.
+    pub async fn send_message(&self, message: CollaborationMessage) -> Result<()> {
+        let active_session_guard = self.active_session.read().await;
+        if let Some(session) = active_session_guard.as_ref() {
+            if session.host.id == self.my_participant_id {
+                // If I am the host, broadcast the message
+                if let Err(e) = session.message_tx.send(message) {
+                    error!("Failed to broadcast message from host: {}", e);
+                    return Err(anyhow!("Failed to broadcast message: {}", e));
+                }
             } else {
-                Err("User already in session.".to_string())
-            }
-        } else {
-            Err("Session not found.".to_string())
-        }
-    }
-
-    pub fn leave_session(&mut self, session_id: Uuid, user_id: String) -> Result<(), String> {
-        if let Some(session) = self.active_sessions.get_mut(&session_id) {
-            session.active_users.retain(|u| u != &user_id);
-            session.last_activity = Utc::now();
-            if session.active_users.is_empty() {
-                self.end_session(session_id)?;
+                // If I am a client, I need to send it to the host.
+                // This requires a separate WebSocket writer for the client.
+                // For simplicity, this example assumes client only receives,
+                // or a dedicated client-side WebSocket writer would be passed around.
+                // TODO: Implement client-side message sending to host.
+                warn!("Client attempting to send message, but direct sending to host is not yet implemented.");
+                return Err(anyhow!("Client-side message sending not implemented."));
             }
             Ok(())
         } else {
-            Err("Session not found.".to_string())
+            Err(anyhow!("No active session to send message to."))
         }
     }
 
-    pub fn get_session_info(&self, session_id: Uuid) -> Option<&SharedSession> {
-        self.active_sessions.get(&session_id)
+    /// Ends the current active session, whether as host or client.
+    pub async fn end_session(&self) -> Result<()> {
+        let mut active_session_guard = self.active_session.write().await;
+        if let Some(session) = active_session_guard.take() {
+            info!("Ending session: {}", session.id);
+            if *self.is_host_active.read().await {
+                // If host, send close message to all participants
+                if let Err(e) = session.message_tx.send(CollaborationMessage::Close) {
+                    error!("Failed to send close message to participants: {}", e);
+                }
+                *self.is_host_active.write().await = false;
+            }
+            let _ = self.event_sender.send(SessionSharingEvent::SessionEnded { session_id: session.id.clone() });
+            Ok(())
+        } else {
+            Err(anyhow!("No active session to end."))
+        }
+    }
+
+    /// Handles a single WebSocket connection for the host.
+    async fn handle_connection(
+        stream: TcpStream,
+        session: Arc<SharedSession>,
+        event_tx: broadcast::Sender<SessionSharingEvent>,
+    ) -> Result<()> {
+        let ws_stream = accept_async(stream).await?;
+        let (mut write, mut read) = ws_stream.split();
+
+        let mut msg_rx = session.message_tx.subscribe();
+
+        // Task to send messages from the session's broadcast channel to the client
+        let mut write_task = tokio::spawn(async move {
+            while let Ok(msg) = msg_rx.recv().await {
+                if let Err(e) = write.send(Message::Text(serde_json::to_string(&msg).unwrap())).await {
+                    error!("Failed to send message to client: {}", e);
+                    break;
+                }
+            }
+            info!("WebSocket write task ended.");
+        });
+
+        let mut participant_id: Option<String> = None;
+
+        // Task to receive messages from the client
+        while let Some(msg_res) = read.next().await {
+            match msg_res {
+                Ok(Message::Text(text)) => {
+                    match serde_json::from_str::<CollaborationMessage>(&text) {
+                        Ok(msg) => {
+                            match msg {
+                                CollaborationMessage::Hello { participant } => {
+                                    info!("Received Hello from new participant: {}", participant.name);
+                                    session.add_participant(participant.clone()).await;
+                                    participant_id = Some(participant.id.clone());
+
+                                    // Send Welcome message back to the new participant
+                                    let welcome_msg = CollaborationMessage::Welcome {
+                                        session_id: session.id.clone(),
+                                        host: session.host.clone(),
+                                        active_participants: session.get_participants_list().await,
+                                    };
+                                    if let Err(e) = write.send(Message::Text(serde_json::to_string(&welcome_msg).unwrap())).await {
+                                        error!("Failed to send welcome message: {}", e);
+                                        break;
+                                    }
+                                    let _ = event_tx.send(SessionSharingEvent::ParticipantJoined { participant });
+                                },
+                                CollaborationMessage::Close => {
+                                    info!("Client requested session close.");
+                                    break;
+                                },
+                                _ => {
+                                    // Re-broadcast other messages from this client to all other participants
+                                    if let Err(e) = session.message_tx.send(msg) {
+                                        error!("Failed to re-broadcast client message: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to deserialize WebSocket message from client: {}", e);
+                            let _ = event_tx.send(SessionSharingEvent::Error(format!("Deserialization error from client: {}", e)));
+                        }
+                    }
+                }
+                Ok(Message::Binary(_)) => warn!("Received binary message from client, not supported yet."),
+                Ok(Message::Ping(_)) => info!("Received WebSocket ping from client."),
+                Ok(Message::Pong(_)) => info!("Received WebSocket pong from client."),
+                Ok(Message::Close(_)) => {
+                    info!("WebSocket connection closed by client.");
+                    break;
+                }
+                Err(e) => {
+                    error!("WebSocket read error from client: {}", e);
+                    let _ = event_tx.send(SessionSharingEvent::Error(format!("WebSocket read error from client: {}", e)));
+                    break;
+                }
+            }
+        }
+
+        // Clean up: remove participant and abort write task
+        write_task.abort();
+        if let Some(p_id) = participant_id {
+            session.remove_participant(&p_id).await;
+            let _ = event_tx.send(SessionSharingEvent::ParticipantLeft {
+                participant: Participant {
+                    id: p_id,
+                    name: "Unknown".to_string(), // Name might not be available here
+                    is_host: false,
+                },
+            });
+        }
+        info!("WebSocket read task ended for a client.");
+        Ok(())
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum CollaborationMessage {
-    Hello { peer_id: String },
-    TextUpdate { content: String, cursor_pos: usize },
-    Command { command: String },
-    Goodbye { peer_id: String },
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::time::{sleep, Duration};
 
-pub fn init() {
-    info!("Collaboration session sharing module loaded");
+    async fn setup_host() -> (SessionSharingManager, String, broadcast::Receiver<SessionSharingEvent>) {
+        let host_id = "host1".to_string();
+        let host_name = "HostUser".to_string();
+        let manager = SessionSharingManager::new(host_id, host_name);
+        let rx = manager.subscribe_events();
+        let bind_addr = "127.0.0.1:8080";
+        let session_id = manager.start_host_session(bind_addr).await.unwrap();
+        // Wait for SessionStarted event
+        let _ = rx.recv().await.unwrap();
+        (manager, bind_addr.to_string(), rx)
+    }
+
+    #[tokio::test]
+    async fn test_host_session_lifecycle() {
+        let (host_manager, bind_addr, mut rx) = setup_host().await;
+
+        // Verify host is active
+        assert!(*host_manager.is_host_active.read().await);
+        assert!(host_manager.active_session.read().await.is_some());
+
+        // End session
+        host_manager.end_session().await.unwrap();
+        assert!(!*host_manager.is_host_active.read().await);
+        assert!(host_manager.active_session.read().await.is_none());
+
+        // Verify SessionEnded event
+        let event = rx.recv().await.unwrap();
+        assert!(matches!(event, SessionSharingEvent::SessionEnded { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_client_connect_and_disconnect() {
+        let (host_manager, bind_addr, mut host_rx) = setup_host().await;
+        let session_id = host_manager.active_session.read().await.as_ref().unwrap().id.clone();
+
+        let client_id = "client1".to_string();
+        let client_name = "ClientUser".to_string();
+        let client_manager = SessionSharingManager::new(client_id.clone(), client_name.clone());
+        let mut client_rx = client_manager.subscribe_events();
+
+        // Client connects
+        client_manager.connect_to_session(&bind_addr, &session_id).await.unwrap();
+
+        // Verify client SessionStarted event
+        let client_event = client_rx.recv().await.unwrap();
+        assert!(matches!(client_event, SessionSharingEvent::SessionStarted { is_host: false, .. }));
+
+        // Verify host receives ParticipantJoined event
+        let host_event = host_rx.recv().await.unwrap();
+        assert!(matches!(host_event, SessionSharingEvent::ParticipantJoined { participant, .. } if participant.id == client_id));
+
+        // Verify host receives ParticipantUpdate event
+        let host_event = host_rx.recv().await.unwrap();
+        assert!(matches!(host_event, SessionSharingEvent::MessageReceived(CollaborationMessage::ParticipantUpdate { participants }) if participants.len() == 2));
+
+        // Client disconnects
+        client_manager.end_session().await.unwrap();
+
+        // Verify client SessionEnded event
+        let client_event = client_rx.recv().await.unwrap();
+        assert!(matches!(client_event, SessionSharingEvent::SessionEnded { .. }));
+
+        // Verify host receives ParticipantLeft event
+        let host_event = host_rx.recv().await.unwrap();
+        assert!(matches!(host_event, SessionSharingEvent::ParticipantLeft { participant, .. } if participant.id == client_id));
+
+        // Verify host receives ParticipantUpdate event
+        let host_event = host_rx.recv().await.unwrap();
+        assert!(matches!(host_event, SessionSharingEvent::MessageReceived(CollaborationMessage::ParticipantUpdate { participants }) if participants.len() == 1));
+
+        host_manager.end_session().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_host_broadcasts_message() {
+        let (host_manager, bind_addr, mut host_rx) = setup_host().await;
+        let session_id = host_manager.active_session.read().await.as_ref().unwrap().id.clone();
+
+        let client_manager = SessionSharingManager::new("client1".to_string(), "ClientUser".to_string());
+        let mut client_rx = client_manager.subscribe_events();
+        client_manager.connect_to_session(&bind_addr, &session_id).await.unwrap();
+        let _ = client_rx.recv().await; // SessionStarted
+        let _ = host_rx.recv().await; // ParticipantJoined
+        let _ = host_rx.recv().await; // ParticipantUpdate
+
+        let chat_message = CollaborationMessage::Chat {
+            sender_id: host_manager.my_participant_id.clone(),
+            message: "Hello everyone!".to_string(),
+        };
+
+        host_manager.send_message(chat_message.clone()).await.unwrap();
+
+        // Client should receive the message
+        let client_event = client_rx.recv().await.unwrap();
+        assert!(matches!(client_event, SessionSharingEvent::MessageReceived(msg) if msg == chat_message));
+
+        host_manager.end_session().await.unwrap();
+        client_manager.end_session().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_client_cannot_send_message_directly() {
+        let (host_manager, bind_addr, _) = setup_host().await;
+        let session_id = host_manager.active_session.read().await.as_ref().unwrap().id.clone();
+
+        let client_manager = SessionSharingManager::new("client1".to_string(), "ClientUser".to_string());
+        client_manager.connect_to_session(&bind_addr, &session_id).await.unwrap();
+        sleep(Duration::from_millis(100)).await; // Give time for connection to establish
+
+        let chat_message = CollaborationMessage::Chat {
+            sender_id: client_manager.my_participant_id.clone(),
+            message: "I am a client trying to send!".to_string(),
+        };
+
+        let result = client_manager.send_message(chat_message).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "Client-side message sending not implemented.");
+
+        host_manager.end_session().await.unwrap();
+        client_manager.end_session().await.unwrap();
+    }
 }

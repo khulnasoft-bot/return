@@ -1,304 +1,249 @@
+use anyhow::{anyhow, Result};
+use iced::Color;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use iced;
-use anyhow::Result;
-use thiserror::Error;
-use log::info;
 
-use crate::config::{ThemeConfig, ColorScheme, ColorValue, AnsiColors, Typography, Effects, Spacing};
-use super::theme::Theme;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Represents a theme defined in a YAML file.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct YamlTheme {
     pub name: String,
-    pub description: String,
-    #[serde(default)]
-    pub colors: HashMap<String, String>,
-    #[serde(default)]
-    pub syntax_highlighting: HashMap<String, String>,
-    #[serde(default)]
-    pub ui_elements: HashMap<String, String>,
-}
-
-#[derive(Error, Debug)]
-pub enum YamlThemeError {
-    #[error("Invalid color format: {0}")]
-    InvalidColorFormat(String),
-    #[error("Missing required field: {0}")]
-    MissingField(String),
-    #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
-    #[error("YAML error: {0}")]
-    YamlError(#[from] serde_yaml::Error),
+    pub description: Option<String>,
+    pub author: Option<String>,
+    pub colors: HashMap<String, String>, // Color name -> color value (e.g., "#RRGGBB", "rgb(r,g,b)")
+    pub terminal_colors: Option<HashMap<String, String>>, // ANSI color name -> color value
 }
 
 impl YamlTheme {
-    pub fn from_yaml(yaml: &str) -> Result<Self, YamlThemeError> {
-        let theme: YamlTheme = serde_yaml::from_str(yaml)?;
-        theme.validate()?;
-        Ok(theme)
+    /// Converts a `YamlTheme` into an `iced::Theme::Custom` instance.
+    pub fn to_iced_theme(&self) -> iced::Theme {
+        let mut palette = iced::theme::Palette::default();
+
+        // Parse main colors
+        if let Some(bg) = self.colors.get("background") {
+            if let Ok(color) = parse_color(bg) {
+                palette.background = color;
+            }
+        }
+        if let Some(fg) = self.colors.get("foreground") {
+            if let Ok(color) = parse_color(fg) {
+                palette.text = color;
+            }
+        }
+        if let Some(primary) = self.colors.get("primary") {
+            if let Ok(color) = parse_color(primary) {
+                palette.primary = color;
+            }
+        }
+        if let Some(success) = self.colors.get("success") {
+            if let Ok(color) = parse_color(success) {
+                palette.success = color;
+            }
+        }
+        if let Some(danger) = self.colors.get("danger") {
+            if let Ok(color) = parse_color(danger) {
+                palette.danger = color;
+            }
+        }
+
+        // Iced's custom theme only allows setting a palette.
+        // For more granular control (like terminal colors), you'd need to
+        // implement custom style sheets that consume these colors.
+        iced::Theme::Custom(Box::new(iced::theme::Custom::new(palette)))
     }
 
-    pub fn to_yaml(&self) -> Result<String, YamlThemeError> {
-        Ok(serde_yaml::to_string(self)?)
-    }
-
-    pub fn validate(&self) -> Result<(), YamlThemeError> {
+    /// Validates the YAML theme structure and color formats.
+    pub fn validate(&self) -> Result<()> {
         if self.name.is_empty() {
-            return Err(YamlThemeError::MissingField("name".to_string()));
+            return Err(anyhow!("Theme name cannot be empty."));
         }
-        for (key, value) in &self.colors {
-            parse_color(value).map_err(|_| YamlThemeError::InvalidColorFormat(key.clone()))?;
+
+        for (color_name, color_value) in &self.colors {
+            parse_color(color_value).map_err(|e| anyhow!("Invalid color format for '{}': {}", color_name, e))?;
         }
-        for (key, value) in &self.syntax_highlighting {
-            parse_color(value).map_err(|_| YamlThemeError::InvalidColorFormat(key.clone()))?;
+
+        if let Some(term_colors) = &self.terminal_colors {
+            for (color_name, color_value) in term_colors {
+                parse_color(color_value).map_err(|e| anyhow!("Invalid terminal color format for '{}': {}", color_name, e))?;
+            }
         }
-        for (key, value) in &self.ui_elements {
-            parse_color(value).map_err(|_| YamlThemeError::InvalidColorFormat(key.clone()))?;
-        }
+
         Ok(())
     }
+}
 
-    /// Convert to internal ThemeConfig
-    pub fn to_theme_config(&self) -> Result<ThemeConfig, YamlThemeError> {
-        let colors = ColorScheme {
-            background: parse_color(&self.colors.get("background").unwrap_or(&"#000000".to_string()))?,
-            surface: self.derive_surface_color()?,
-            surface_variant: self.derive_surface_variant_color()?,
-            
-            text: parse_color(&self.colors.get("foreground").unwrap_or(&"#FFFFFF".to_string()))?,
-            text_secondary: self.derive_text_secondary()?,
-            text_disabled: self.derive_text_disabled()?,
-            
-            terminal_background: parse_color(&self.colors.get("background").unwrap_or(&"#000000".to_string()))?,
-            terminal_foreground: parse_color(&self.colors.get("foreground").unwrap_or(&"#FFFFFF".to_string()))?,
-            terminal_cursor: parse_color(&self.colors.get("cursor").unwrap_or(&"#FFFFFF".to_string())).unwrap_or_default(),
-            terminal_selection: parse_color(&self.colors.get("selection").unwrap_or(&"#555555".to_string())).unwrap_or_default(),
-            
-            ansi_colors: AnsiColors {
-                black: parse_color(&self.colors.get("black").unwrap_or(&"#000000".to_string()))?,
-                red: parse_color(&self.colors.get("red").unwrap_or(&"#CD3131".to_string()))?,
-                green: parse_color(&self.colors.get("green").unwrap_or(&"#0BCB0B".to_string()))?,
-                yellow: parse_color(&self.colors.get("yellow").unwrap_or(&"#E5E510".to_string()))?,
-                blue: parse_color(&self.colors.get("blue").unwrap_or(&"#2472C8".to_string()))?,
-                magenta: parse_color(&self.colors.get("magenta").unwrap_or(&"#BC3FBC".to_string()))?,
-                cyan: parse_color(&self.colors.get("cyan").unwrap_or(&"#0ADBBF".to_string()))?,
-                white: parse_color(&self.colors.get("white").unwrap_or(&"#E5E5E5".to_string()))?,
-                
-                bright_black: parse_color(&self.colors.get("bright_black").unwrap_or(&"#666666".to_string()))?,
-                bright_red: parse_color(&self.colors.get("bright_red").unwrap_or(&"#F14C4C".to_string()))?,
-                bright_green: parse_color(&self.colors.get("bright_green").unwrap_or(&"#17A717".to_string()))?,
-                bright_yellow: parse_color(&self.colors.get("bright_yellow").unwrap_or(&"#F5F543".to_string()))?,
-                bright_blue: parse_color(&self.colors.get("bright_blue").unwrap_or(&"#3B8EEA".to_string()))?,
-                bright_magenta: parse_color(&self.colors.get("bright_magenta").unwrap_or(&"#D670D6".to_string()))?,
-                bright_cyan: parse_color(&self.colors.get("bright_cyan").unwrap_or(&"#1ADCEF".to_string()))?,
-                bright_white: parse_color(&self.colors.get("bright_white").unwrap_or(&"#FFFFFF".to_string()))?,
-            },
-            
-            primary: parse_color(&self.colors.get("foreground").unwrap_or(&"#FFFFFF".to_string()))?,
-            secondary: parse_color(&self.colors.get("background").unwrap_or(&"#000000".to_string()))?,
-            accent: parse_color(&self.colors.get("foreground").unwrap_or(&"#FFFFFF".to_string()))?,
-            success: parse_color(&self.colors.get("green").unwrap_or(&"#0BCB0B".to_string()))?,
-            warning: parse_color(&self.colors.get("yellow").unwrap_or(&"#E5E510".to_string()))?,
-            error: parse_color(&self.colors.get("red").unwrap_or(&"#CD3131".to_string()))?,
-            
-            hover: self.derive_hover_color()?,
-            active: self.derive_active_color()?,
-            focus: self.derive_focus_color()?,
-            disabled: self.derive_disabled_color()?,
-            
-            border: parse_color(&self.colors.get("foreground").unwrap_or(&"#FFFFFF".to_string()))?,
-            divider: self.derive_divider_color()?,
+/// Parses a color string into an `iced::Color`.
+/// Supports hex (#RRGGBB, #RRGGBBAA), rgb(r,g,b), rgba(r,g,b,a), hsl(h,s,l), and common named colors.
+pub fn parse_color(color_str: &str) -> Result<Color> {
+    let s = color_str.trim();
+
+    // Hex colors
+    if s.starts_with('#') {
+        let hex = &s[1..];
+        return match hex.len() {
+            6 => Color::from_rgb_hex(hex).map_err(|_| anyhow!("Invalid hex color: {}", s)),
+            8 => Color::from_rgba_hex(hex).map_err(|_| anyhow!("Invalid hex color: {}", s)),
+            _ => Err(anyhow!("Invalid hex color length: {}", s)),
         };
+    }
 
-        let typography = Typography {
-            font_family: "".to_string(),
-            font_size: 0.0,
-            line_height: 0.0,
-            letter_spacing: 0.0,
-            ..Typography::default()
-        };
+    // RGB/RGBA
+    if s.starts_with("rgb(") || s.starts_with("rgba(") {
+        let parts: Vec<&str> = s
+            .trim_start_matches("rgb(")
+            .trim_start_matches("rgba(")
+            .trim_end_matches(')')
+            .split(',')
+            .map(|p| p.trim())
+            .collect();
 
-        let effects = Effects {
-            border_radius: 0.0,
-            shadow_blur: 0.0,
-            shadow_offset: (0.0, 0.0),
-            ..Effects::default()
-        };
+        if parts.len() == 3 {
+            let r = parts[0].parse::<u8>()?;
+            let g = parts[1].parse::<u8>()?;
+            let b = parts[2].parse::<u8>()?;
+            return Ok(Color::from_rgb8(r, g, b));
+        } else if parts.len() == 4 {
+            let r = parts[0].parse::<u8>()?;
+            let g = parts[1].parse::<u8>()?;
+            let b = parts[2].parse::<u8>()?;
+            let a = parts[3].parse::<f32>()?; // Alpha is 0.0-1.0
+            return Ok(Color::from_rgba8(r, g, b, (a * 255.0).round() as u8));
+        } else {
+            return Err(anyhow!("Invalid RGB/RGBA format: {}", s));
+        }
+    }
 
-        Ok(ThemeConfig {
-            name: self.name.clone(),
+    // HSL (simplified, Iced doesn't have direct HSL constructor for Color)
+    // This would require converting HSL to RGB. For now, we'll just error.
+    if s.starts_with("hsl(") {
+        return Err(anyhow!("HSL color format not directly supported by iced::Color: {}", s));
+    }
+
+    // Named colors (a very small subset for demonstration)
+    match s.to_lowercase().as_str() {
+        "black" => Ok(Color::BLACK),
+        "white" => Ok(Color::WHITE),
+        "red" => Ok(Color::from_rgb(1.0, 0.0, 0.0)),
+        "green" => Ok(Color::from_rgb(0.0, 1.0, 0.0)),
+        "blue" => Ok(Color::from_rgb(0.0, 0.0, 1.0)),
+        "yellow" => Ok(Color::from_rgb(1.0, 1.0, 0.0)),
+        "cyan" => Ok(Color::from_rgb(0.0, 1.0, 1.0)),
+        "magenta" => Ok(Color::from_rgb(1.0, 0.0, 1.0)),
+        "gray" => Ok(Color::from_rgb(0.5, 0.5, 0.5)),
+        "lightgray" => Ok(Color::from_rgb(0.8, 0.8, 0.8)),
+        "darkgray" => Ok(Color::from_rgb(0.3, 0.3, 0.3)),
+        _ => Err(anyhow!("Unknown color format or named color: {}", s)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_parse_color_hex_rgb() {
+        assert_eq!(parse_color("#FF0000").unwrap(), Color::from_rgb(1.0, 0.0, 0.0));
+        assert_eq!(parse_color("#00FF00").unwrap(), Color::from_rgb(0.0, 1.0, 0.0));
+        assert_eq!(parse_color("#0000FF").unwrap(), Color::from_rgb(0.0, 0.0, 1.0));
+        assert_eq!(parse_color("#123456").unwrap(), Color::from_rgb8(0x12, 0x34, 0x56));
+    }
+
+    #[test]
+    fn test_parse_color_hex_rgba() {
+        assert_eq!(parse_color("#FF000080").unwrap(), Color::from_rgba(1.0, 0.0, 0.0, 0.5));
+        assert_eq!(parse_color("#000000FF").unwrap(), Color::BLACK);
+        assert_eq!(parse_color("#FFFFFF00").unwrap(), Color::from_rgba(1.0, 1.0, 1.0, 0.0));
+    }
+
+    #[test]
+    fn test_parse_color_rgb() {
+        assert_eq!(parse_color("rgb(255,0,0)").unwrap(), Color::from_rgb(1.0, 0.0, 0.0));
+        assert_eq!(parse_color("rgb(0, 255, 0)").unwrap(), Color::from_rgb(0.0, 1.0, 0.0));
+        assert_eq!(parse_color("rgb(10,20,30)").unwrap(), Color::from_rgb8(10, 20, 30));
+    }
+
+    #[test]
+    fn test_parse_color_rgba() {
+        assert_eq!(parse_color("rgba(255,0,0,0.5)").unwrap(), Color::from_rgba(1.0, 0.0, 0.0, 0.5));
+        assert_eq!(parse_color("rgba(0, 0, 0, 1.0)").unwrap(), Color::BLACK);
+        assert_eq!(parse_color("rgba(255, 255, 255, 0.0)").unwrap(), Color::from_rgba(1.0, 1.0, 1.0, 0.0));
+    }
+
+    #[test]
+    fn test_parse_color_named() {
+        assert_eq!(parse_color("black").unwrap(), Color::BLACK);
+        assert_eq!(parse_color("WHITE").unwrap(), Color::WHITE);
+        assert_eq!(parse_color("red").unwrap(), Color::from_rgb(1.0, 0.0, 0.0));
+        assert_eq!(parse_color("lightgray").unwrap(), Color::from_rgb(0.8, 0.8, 0.8));
+    }
+
+    #[test]
+    fn test_parse_color_invalid() {
+        assert!(parse_color("#FF00").is_err()); // Too short hex
+        assert!(parse_color("rgb(255,0)").is_err()); // Too few rgb components
+        assert!(parse_color("rgba(255,0,0)").is_err()); // Too few rgba components
+        assert!(parse_color("hsl(10, 50%, 50%)").is_err()); // HSL not supported
+        assert!(parse_color("unknowncolor").is_err());
+    }
+
+    #[test]
+    fn test_yaml_theme_to_iced_theme() {
+        let mut colors = HashMap::new();
+        colors.insert("background".to_string(), "#1E1E1E".to_string());
+        colors.insert("foreground".to_string(), "#D4D4D4".to_string());
+        colors.insert("primary".to_string(), "rgb(0, 122, 204)".to_string());
+        colors.insert("success".to_string(), "green".to_string());
+
+        let theme = YamlTheme {
+            name: "Test Theme".to_string(),
+            description: None,
+            author: None,
             colors,
-            typography,
-            spacing: Spacing::default(),
-            effects,
-            custom_themes: HashMap::new(),
-        })
-    }
+            terminal_colors: None,
+        };
 
-    /// Create from internal ThemeConfig
-    pub fn from_theme_config(theme: &ThemeConfig) -> Self {
-        Self {
-            name: theme.name.clone(),
-            description: "".to_string(),
-            colors: theme.colors.iter().map(|(k, v)| (k.clone(), color_to_hex(*v))).collect(),
-            syntax_highlighting: HashMap::new(),
-            ui_elements: HashMap::new(),
+        let iced_theme = theme.to_iced_theme();
+        if let iced::Theme::Custom(custom_theme) = iced_theme {
+            assert_eq!(custom_theme.palette().background, Color::from_rgb8(0x1E, 0x1E, 0x1E));
+            assert_eq!(custom_theme.palette().text, Color::from_rgb8(0xD4, 0xD4, 0xD4));
+            assert_eq!(custom_theme.palette().primary, Color::from_rgb8(0, 122, 204));
+            assert_eq!(custom_theme.palette().success, Color::from_rgb(0.0, 1.0, 0.0));
+        } else {
+            panic!("Expected a custom theme");
         }
     }
 
-    /// Helper methods for deriving colors
-    fn derive_surface_color(&self) -> Result<ColorValue, YamlThemeError> {
-        let bg = parse_color(&self.colors.get("background").unwrap_or(&"#000000".to_string()))?;
-        Ok(if self.is_dark_theme() {
-            lighten_color(bg, 0.05)
-        } else {
-            darken_color(bg, 0.02)
-        })
+    #[test]
+    fn test_yaml_theme_validate() {
+        let mut colors = HashMap::new();
+        colors.insert("background".to_string(), "#1E1E1E".to_string());
+        let theme = YamlTheme {
+            name: "Valid Theme".to_string(),
+            description: None,
+            author: None,
+            colors,
+            terminal_colors: None,
+        };
+        assert!(theme.validate().is_ok());
+
+        let mut invalid_colors = HashMap::new();
+        invalid_colors.insert("background".to_string(), "invalid-color".to_string());
+        let invalid_theme = YamlTheme {
+            name: "Invalid Theme".to_string(),
+            description: None,
+            author: None,
+            colors: invalid_colors,
+            terminal_colors: None,
+        };
+        assert!(invalid_theme.validate().is_err());
+
+        let empty_name_theme = YamlTheme {
+            name: "".to_string(),
+            description: None,
+            author: None,
+            colors: HashMap::new(),
+            terminal_colors: None,
+        };
+        assert!(empty_name_theme.validate().is_err());
     }
-
-    fn derive_surface_variant_color(&self) -> Result<ColorValue, YamlThemeError> {
-        let bg = parse_color(&self.colors.get("background").unwrap_or(&"#000000".to_string()))?;
-        Ok(if self.is_dark_theme() {
-            lighten_color(bg, 0.1)
-        } else {
-            darken_color(bg, 0.05)
-        })
-    }
-
-    fn derive_text_secondary(&self) -> Result<ColorValue, YamlThemeError> {
-        let fg = parse_color(&self.colors.get("foreground").unwrap_or(&"#FFFFFF".to_string()))?;
-        Ok(ColorValue {
-            a: 0.7,
-            ..fg
-        })
-    }
-
-    fn derive_text_disabled(&self) -> Result<ColorValue, YamlThemeError> {
-        let fg = parse_color(&self.colors.get("foreground").unwrap_or(&"#FFFFFF".to_string()))?;
-        Ok(ColorValue {
-            a: 0.5,
-            ..fg
-        })
-    }
-
-    fn derive_hover_color(&self) -> Result<ColorValue, YamlThemeError> {
-        Ok(if self.is_dark_theme() {
-            ColorValue { r: 1.0, g: 1.0, b: 1.0, a: 0.1 }
-        } else {
-            ColorValue { r: 0.0, g: 0.0, b: 0.0, a: 0.05 }
-        })
-    }
-
-    fn derive_active_color(&self) -> Result<ColorValue, YamlThemeError> {
-        Ok(if self.is_dark_theme() {
-            ColorValue { r: 1.0, g: 1.0, b: 1.0, a: 0.2 }
-        } else {
-            ColorValue { r: 0.0, g: 0.0, b: 0.0, a: 0.1 }
-        })
-    }
-
-    fn derive_focus_color(&self) -> Result<ColorValue, YamlThemeError> {
-        let accent = parse_color(&self.colors.get("foreground").unwrap_or(&"#FFFFFF".to_string()))?;
-        Ok(ColorValue {
-            a: 0.5,
-            ..accent
-        })
-    }
-
-    fn derive_disabled_color(&self) -> Result<ColorValue, YamlThemeError> {
-        Ok(ColorValue { r: 0.5, g: 0.5, b: 0.5, a: 0.5 })
-    }
-
-    fn derive_divider_color(&self) -> Result<ColorValue, YamlThemeError> {
-        let bg = parse_color(&self.colors.get("background").unwrap_or(&"#000000".to_string()))?;
-        Ok(if self.is_dark_theme() {
-            lighten_color(bg, 0.15)
-        } else {
-            darken_color(bg, 0.15)
-        })
-    }
-
-    fn is_dark_theme(&self) -> bool {
-        if let Ok(bg) = parse_color(&self.colors.get("background").unwrap_or(&"#000000".to_string())) {
-            // Calculate luminance
-            let luminance = 0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b;
-            luminance < 0.5
-        } else {
-            true // Default to dark
-        }
-    }
-
-    pub fn to_iced_theme(&self) -> crate::config::theme::Theme {
-        crate::config::theme::Theme {
-            background: parse_hex_color(&self.colors.get("background").unwrap_or(&"#000000".to_string())).unwrap_or(iced::Color::BLACK),
-            foreground: parse_hex_color(&self.colors.get("foreground").unwrap_or(&"#FFFFFF".to_string())).unwrap_or(iced::Color::WHITE),
-            primary: parse_hex_color(&self.colors.get("foreground").unwrap_or(&"#FFFFFF".to_string())).unwrap_or(iced::Color::BLUE),
-            secondary: parse_hex_color(&self.colors.get("background").unwrap_or(&"#646464".to_string())).unwrap_or(iced::Color::from_rgb8(100, 100, 100)),
-            danger: parse_hex_color(&self.colors.get("red").unwrap_or(&"#CD3131".to_string())).unwrap_or(iced::Color::RED),
-            text: parse_hex_color(&self.colors.get("foreground").unwrap_or(&"#FFFFFF".to_string())).unwrap_or(iced::Color::BLACK),
-            border: parse_hex_color(&self.colors.get("foreground").unwrap_or(&"#FFFFFF".to_string())).unwrap_or(iced::Color::from_rgb8(200, 200, 200)),
-        }
-    }
-
-    pub fn load_from_str(s: &str) -> Result<Self> {
-        Ok(serde_yaml::from_str(s)?)
-    }
-
-    pub fn to_string(&self) -> Result<String> {
-        Ok(serde_yaml::to_string(self)?)
-    }
-}
-
-impl From<Theme> for YamlTheme {
-    fn from(theme: Theme) -> Self {
-        Self {
-            name: theme.name,
-            description: theme.description,
-            colors: theme.colors,
-            syntax_highlighting: theme.syntax_highlighting,
-            ui_elements: theme.ui_elements,
-        }
-    }
-}
-
-/// Parse color from various formats (hex, rgb, hsl, named)
-fn parse_color(hex_color: &str) -> Result<iced::Color, String> {
-    if hex_color.starts_with('#') && hex_color.len() == 7 {
-        let r = u8::from_str_radix(&hex_color[1..3], 16).map_err(|_| "Invalid red component".to_string())?;
-        let g = u8::from_str_radix(&hex_color[3..5], 16).map_err(|_| "Invalid green component".to_string())?;
-        let b = u8::from_str_radix(&hex_color[5..7], 16).map_err(|_| "Invalid blue component".to_string())?;
-        Ok(iced::Color::from_rgb8(r, g, b))
-    } else {
-        Err("Invalid color format. Use #RRGGBB".to_string())
-    }
-}
-
-/// Convert ColorValue to hex string
-fn color_to_hex(color: iced::Color) -> String {
-    format!("#{:02X}{:02X}{:02X}", (color.r * 255.0) as u8, (color.g * 255.0) as u8, (color.b * 255.0) as u8)
-}
-
-/// Lighten a color by a factor
-fn lighten_color(color: iced::Color, factor: f32) -> iced::Color {
-    iced::Color {
-        r: (color.r + (1.0 - color.r) * factor).clamp(0.0, 1.0),
-        g: (color.g + (1.0 - color.g) * factor).clamp(0.0, 1.0),
-        b: (color.b + (1.0 - color.b) * factor).clamp(0.0, 1.0),
-        a: color.a,
-    }
-}
-
-/// Darken a color by a factor
-fn darken_color(color: iced::Color, factor: f32) -> iced::Color {
-    iced::Color {
-        r: (color.r * (1.0 - factor)).clamp(0.0, 1.0),
-        g: (color.g * (1.0 - factor)).clamp(0.0, 1.0),
-        b: (color.b * (1.0 - factor)).clamp(0.0, 1.0),
-        a: color.a,
-    }
-}
-
-pub fn init() {
-    info!("config/yaml_theme module loaded");
 }

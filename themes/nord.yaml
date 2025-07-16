@@ -1,61 +1,35 @@
-name: "Nord"
-author: "Arctic Ice Studio"
-description: "An arctic, north-bluish color palette"
-accent: "#88c0d0"
-background: "#2e3440"
-details: "darker"
-foreground: "#eceff4"
-cursor: "#d8dee9"
-selection: "#4c566a"
-border: "#4c566a"
+name: nord
+description: A cool, clean, and calm theme inspired by the Nord color palette.
+author: NeoTerm
 
 colors:
-  background: "#2e3440"
-  foreground: "#eceff4"
-  primary: "#88c0d0"
-  secondary: "#81a1c1"
-  danger: "#bf616a"
-  text: "#eceff4"
-  border: "#4c566a"
+  background: "#2E3440" # Nord0 - Polar Night
+  foreground: "#ECEFF4" # Nord6 - Snow Storm
+  primary: "#88C0D0"    # Nord8 - Frost (light blue)
+  secondary: "#8FBCBB"  # Nord7 - Frost (teal)
+  accent: "#A3BE8C"     # Nord14 - Aurora (green)
+  text_color: "#D8DEE9" # Nord4 - Snow Storm
+  border_color: "#4C566A" # Nord3 - Polar Night
+  selection_color: "#434C5E" # Nord2 - Polar Night
+  error_color: "#BF616A"    # Nord11 - Aurora (red)
+  warning_color: "#EBCB8B"  # Nord13 - Aurora (yellow)
+  info_color: "#81A1C1"     # Nord9 - Frost (dark blue)
+  success_color: "#B48EAD"  # Nord15 - Aurora (purple)
 
 terminal_colors:
-  normal:
-    black: "#3b4252"
-    red: "#bf616a"
-    green: "#a3be8c"
-    yellow: "#ebcb8b"
-    blue: "#81a1c1"
-    magenta: "#b48ead"
-    cyan: "#88c0d0"
-    white: "#e5e9f0"
-  bright:
-    black: "#4c566a"
-    red: "#bf616a"
-    green: "#a3be8c"
-    yellow: "#ebcb8b"
-    blue: "#81a1c1"
-    magenta: "#b48ead"
-    cyan: "#8fbcbb"
-    white: "#eceff4"
-
-ui_colors:
-  primary: "#88c0d0"
-  secondary: "#81a1c1"
-  success: "#a3be8c"
-  warning: "#ebcb8b"
-  error: "#bf616a"
-  info: "#88c0d0"
-  surface: "#3b4252"
-  surface_variant: "#434c5e"
-  outline: "#4c566a"
-
-font:
-  family: "JetBrains Mono"
-  size: 14
-  line_height: 1.2
-
-effects:
-  border_radius: 6
-  shadow_blur: 3
-  shadow_offset: [0, 1]
-  animations: true
+  black: "#3B4252"      # Nord1
+  red: "#BF616A"        # Nord11
+  green: "#A3BE8C"      # Nord14
+  yellow: "#EBCB8B"     # Nord13
+  blue: "#81A1C1"       # Nord9
+  magenta: "#B48EAD"    # Nord15
+  cyan: "#88C0D0"       # Nord8
+  white: "#E5E9F0"      # Nord5
+  bright_black: "#4C566A" # Nord3
+  bright_red: "#BF616A"
+  bright_green: "#A3BE8C"
+  bright_yellow: "#EBCB8B"
+  bright_blue: "#81A1C1"
+  bright_magenta: "#B48EAD"
+  bright_cyan: "#8FBCBB" # Nord7
+  bright_white: "#ECEFF4" # Nord6

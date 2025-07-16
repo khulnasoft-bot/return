@@ -91,6 +91,8 @@ impl ShellManager {
         let output_sender_clone = self.event_sender.clone();
         tokio::spawn(async move {
             let mut buf = vec![0; 4096];
+            let mut parser = Parser::new();
+            let mut performer = VtePerformer::new();
             loop {
                 match reader.read(&mut buf).await {
                     Ok(0) => {
@@ -98,6 +100,7 @@ impl ShellManager {
                         break;
                     },
                     Ok(n) => {
+                        parser.parse(&buf[..n], &mut performer);
                         if output_sender_clone.send(ShellEvent::Output(ShellOutput {
                             data: buf[..n].to_vec(),
                             is_stderr: false, // PTYs don't distinguish stdout/stderr

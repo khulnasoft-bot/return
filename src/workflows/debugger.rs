@@ -185,6 +185,17 @@ pub enum DebugCommand {
     Restart,
 }
 
+#[derive(Debug, Clone)]
+pub enum DebugEvent {
+    SessionStarted(String),
+    BreakpointHit(usize),
+    ExecutionResumed,
+    ExecutionPaused,
+    ExecutionCompleted,
+    StepCompleted(usize, String),
+    StepFailed(usize, String),
+}
+
 impl Debugger {
     pub fn create_session(&mut self, workflow: Workflow) -> String {
         let session_id = Uuid::new_v4().to_string();

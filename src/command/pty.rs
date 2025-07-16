@@ -1,159 +1,176 @@
-use anyhow::{Result, anyhow};
-use portable_pty::{CommandBuilder, PtySize, PtySystem, MasterPty, Child, ChildKiller};
+use anyhow::{anyhow, Result};
+use log::{error, info};
+use std::io::{Read, Write};
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::mpsc;
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::process::{Child, Command};
+use tokio::task;
 
-/// Represents output from the PTY.
-#[derive(Debug, Clone)]
-pub struct PtyOutput {
-    pub data: Vec<u8>,
-    pub is_stderr: bool, // PTYs typically don't separate stdout/stderr, but this could be for future parsing
-}
+#[cfg(unix)]
+use portable_pty::{native_pty, CommandBuilder, PtySize};
+#[cfg(windows)]
+use portable_pty::{native_pty, CommandBuilder, PtySize};
 
-/// Manages a pseudo-terminal session.
+/// Represents an active Pseudo-Terminal (PTY) session.
+#[derive(Clone)]
 pub struct PtySession {
-    master: Box<dyn MasterPty + Send>,
-    _child: Box<dyn Child + Send>, // Keep child handle to prevent it from being dropped
-    _child_killer: Option<Arc<dyn ChildKiller + Send + Sync>>, // For graceful termination
-    output_receiver: mpsc::Receiver<PtyOutput>,
-    input_sender: mpsc::Sender<Vec<u8>>,
+    master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
+    reader: Arc<Mutex<Box<dyn Read + Send>>>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    _child: Arc<Mutex<Child>>, // Keep child handle to ensure process is managed
 }
 
 impl PtySession {
-    pub async fn spawn(
-        executable: &str,
-        args: &[String],
-        working_dir: Option<&str>,
-        env: &HashMap<String, String>,
-    ) -> Result<Self> {
-        let pty_system = portable_pty::PtySystem::default();
+    /// Creates a new PTY session and spawns a command within it.
+    pub async fn new(command: &str, args: &[&str]) -> Result<Self> {
+        info!("Spawning PTY for command: {} {:?}", command, args);
 
-        let pair = pty_system.openpty(PtySize {
-            rows: 24,
-            cols: 80,
-            pixel_width: 0,
-            pixel_height: 0,
-        })?;
+        let pty_system = native_pty().map_err(|e| anyhow!("Failed to create native PTY system: {}", e))?;
 
-        let mut cmd = CommandBuilder::new(executable);
-        cmd.args(args);
-        if let Some(dir) = working_dir {
-            cmd.cwd(dir);
-        }
-        for (key, value) in env {
-            cmd.env(key, value);
-        }
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| anyhow!("Failed to open PTY: {}", e))?;
 
-        let child = pair.slave.spawn_command(cmd)?;
-        let child_killer = child.clone_killer();
+        let mut cmd_builder = CommandBuilder::new(command);
+        cmd_builder.args(args);
 
-        let master = pair.master;
-        let mut reader = master.try_clone_reader()?;
-        let mut writer = master.try_clone_writer()?;
+        let child = pair
+            .slave
+            .spawn_command(cmd_builder)
+            .map_err(|e| anyhow!("Failed to spawn command in PTY: {}", e))?;
 
-        let (output_tx, output_rx) = mpsc::channel(100);
-        let (input_tx, mut input_rx) = mpsc::channel(100);
-
-        // Read from PTY and send to output_tx
-        tokio::spawn(async move {
-            let mut buf = vec![0; 4096];
-            loop {
-                match reader.read(&mut buf).await {
-                    Ok(0) => {
-                        log::debug!("PTY reader got EOF.");
-                        break;
-                    },
-                    Ok(n) => {
-                        if output_tx.send(PtyOutput {
-                            data: buf[..n].to_vec(),
-                            is_stderr: false, // PTYs don't distinguish stdout/stderr
-                        }).await.is_err() {
-                            log::warn!("PTY output receiver dropped.");
-                            break;
-                        }
-                    },
-                    Err(e) => {
-                        log::error!("Error reading from PTY: {:?}", e);
-                        break;
-                    }
-                }
-            }
-        });
-
-        // Read from input_rx and write to PTY
-        tokio::spawn(async move {
-            while let Some(input_data) = input_rx.recv().await {
-                if let Err(e) = writer.write_all(&input_data).await {
-                    log::error!("Error writing to PTY: {:?}", e);
-                    break;
-                }
-            }
-        });
+        let master_reader = pair.master.try_clone_reader().map_err(|e| anyhow!("Failed to clone PTY reader: {}", e))?;
+        let master_writer = pair.master.try_clone_writer().map_err(|e| anyhow!("Failed to clone PTY writer: {}", e))?;
 
         Ok(Self {
-            master,
-            _child: child,
-            _child_killer: child_killer.map(Arc::new),
-            output_receiver: output_rx,
-            input_sender: input_tx,
+            master: Arc::new(Mutex::new(pair.master)),
+            reader: Arc::new(Mutex::new(master_reader)),
+            writer: Arc::new(Mutex::new(master_writer)),
+            _child: Arc::new(Mutex::new(child)),
         })
     }
 
     /// Reads output from the PTY.
-    pub async fn read_output(&mut self) -> Option<PtyOutput> {
-        self.output_receiver.recv().await
+    pub async fn read_output(&mut self, buffer: &mut [u8]) -> Result<usize> {
+        let reader_clone = self.reader.clone();
+        task::spawn_blocking(move || {
+            let mut reader = reader_clone.lock().unwrap();
+            reader.read(buffer).map_err(|e| anyhow!("Failed to read from PTY: {}", e))
+        })
+        .await?
     }
 
     /// Writes input to the PTY.
-    pub async fn write_input(&self, data: &[u8]) -> Result<()> {
-        self.input_sender.send(data.to_vec()).await
-            .map_err(|e| anyhow!("Failed to send input to PTY: {:?}", e))
+    pub async fn write_input(&self, input: &str) -> Result<()> {
+        let writer_clone = self.writer.clone();
+        let input_bytes = input.as_bytes().to_vec(); // Clone input for the blocking task
+        task::spawn_blocking(move || {
+            let mut writer = writer_clone.lock().unwrap();
+            writer.write_all(&input_bytes).map_err(|e| anyhow!("Failed to write to PTY: {}", e))?;
+            writer.flush().map_err(|e| anyhow!("Failed to flush PTY writer: {}", e))
+        })
+        .await?
+    }
+
+    /// Waits for the command running in the PTY to exit.
+    pub async fn wait(&self) -> Result<std::process::ExitStatus> {
+        let child_clone = self._child.clone();
+        task::spawn_blocking(move || {
+            let mut child = child_clone.lock().unwrap();
+            child.wait().map_err(|e| anyhow!("Failed to wait for child process: {}", e))
+        })
+        .await?
+    }
+
+    /// Terminates the command running in the PTY.
+    pub async fn terminate(&self) -> Result<()> {
+        let child_clone = self._child.clone();
+        task::spawn_blocking(move || {
+            let mut child = child_clone.lock().unwrap();
+            child.kill().map_err(|e| anyhow!("Failed to kill child process: {}", e))
+        })
+        .await?
     }
 
     /// Resizes the PTY.
     pub async fn resize(&self, rows: u16, cols: u16) -> Result<()> {
-        self.master.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })?;
-        Ok(())
-    }
-
-    /// Waits for the child process to exit.
-    pub async fn wait(&mut self) -> Result<portable_pty::ExitStatus> {
-        // portable-pty's Child::wait is blocking, so we need to spawn it.
-        let child_handle = self._child.take().ok_or_else(|| anyhow!("Child handle already taken"))?;
-        let exit_status = tokio::task::spawn_blocking(move || child_handle.wait())
-            .await??;
-        Ok(exit_status)
-    }
-
-    /// Sends a signal to the child process (e.g., SIGINT).
-    pub async fn signal(&self, signal: portable_pty::Signal) -> Result<()> {
-        if let Some(killer) = &self._child_killer {
-            killer.signal(signal)?;
-            Ok(())
-        } else {
-            Err(anyhow!("No child killer available for signaling."))
-        }
-    }
-
-    /// Kills the child process.
-    pub async fn kill(&self) -> Result<()> {
-        if let Some(killer) = &self._child_killer {
-            killer.kill()?;
-            Ok(())
-        } else {
-            Err(anyhow!("No child killer available for killing."))
-        }
+        let master_clone = self.master.clone();
+        task::spawn_blocking(move || {
+            let master = master_clone.lock().unwrap();
+            master
+                .resize(PtySize {
+                    rows,
+                    cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .map_err(|e| anyhow!("Failed to resize PTY: {}", e))
+        })
+        .await?
     }
 }
 
 pub fn init() {
-    log::info!("PTY module initialized.");
+    info!("command/pty module loaded");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::time::{sleep, Duration};
+
+    #[tokio::test]
+    async fn test_pty_session_new_and_read() {
+        let mut pty = PtySession::new("echo", &["hello world"]).await.unwrap();
+        let mut buf = vec![0; 1024];
+        let n = pty.read_output(&mut buf).await.unwrap();
+        let output = String::from_utf8_lossy(&buf[..n]);
+        assert!(output.contains("hello world"));
+        let status = pty.wait().await.unwrap();
+        assert!(status.success());
+    }
+
+    #[tokio::test]
+    async fn test_pty_session_write_and_read() {
+        #[cfg(unix)]
+        let mut pty = PtySession::new("cat", &[]).await.unwrap();
+        #[cfg(windows)]
+        let mut pty = PtySession::new("more", &[]).await.unwrap(); // `more` waits for input on Windows
+
+        pty.write_input("test input\n").await.unwrap();
+
+        let mut buf = vec![0; 1024];
+        let n = pty.read_output(&mut buf).await.unwrap();
+        let output = String::from_utf8_lossy(&buf[..n]);
+        assert!(output.contains("test input"));
+
+        pty.terminate().await.unwrap();
+        let status = pty.wait().await.unwrap();
+        assert!(!status.success()); // Should be killed
+    }
+
+    #[tokio::test]
+    async fn test_pty_session_terminate() {
+        #[cfg(unix)]
+        let pty = PtySession::new("sleep", &["5"]).await.unwrap();
+        #[cfg(windows)]
+        let pty = PtySession::new("ping", &["-n", "5", "127.0.0.1"]).await.unwrap();
+
+        pty.terminate().await.unwrap();
+        let status = pty.wait().await.unwrap();
+        assert!(!status.success()); // Should be killed
+    }
+
+    #[tokio::test]
+    async fn test_pty_session_resize() {
+        let pty = PtySession::new("echo", &["hello"]).await.unwrap();
+        let result = pty.resize(30, 100).await;
+        assert!(result.is_ok());
+        // No direct way to verify resize effect in test without inspecting internal state or specific command output
+    }
 }

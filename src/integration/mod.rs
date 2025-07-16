@@ -17,6 +17,7 @@ pub enum IntegrationEvent {
     DockerInfo(String),
     OllamaModelList(Vec<String>),
     OllamaError(String),
+    KubernetesPodList(Vec<String>),
 }
 
 /// Configuration for a specific integration.
@@ -31,6 +32,9 @@ pub enum IntegrationConfig {
     Ollama {
         api_url: String,
         default_model: String,
+    },
+    Kubernetes {
+        kubeconfig_path: String,
     },
     // Add other integration configurations here
 }
@@ -206,6 +210,75 @@ impl Integration for OllamaIntegration {
                         let _ = event_sender.send(IntegrationEvent::StatusUpdate(name_clone.clone(), "Ollama server reachable.".to_string()));
                     } else {
                         let _ = event_sender.send(IntegrationEvent::Error(name_clone.clone(), "Ollama server unreachable!".to_string()));
+                    }
+                }
+            }
+        });
+    }
+}
+
+// --- Example Kubernetes Integration (Conceptual) ---
+// This would require an actual Kubernetes client library.
+// For now, it's a simplified stub.
+
+pub struct KubernetesIntegration {
+    name: String,
+    config: IntegrationConfig,
+}
+
+impl KubernetesIntegration {
+    pub fn new(config: IntegrationConfig) -> Self {
+        Self {
+            name: "Kubernetes".to_string(),
+            config,
+        }
+    }
+}
+
+impl Integration for KubernetesIntegration {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn initialize(&mut self, _event_sender: mpsc::UnboundedSender<IntegrationEvent>) -> Result<(), String> {
+        if let IntegrationConfig::Kubernetes { kubeconfig_path, .. } = &self.config {
+            println!("Kubernetes Integration initialized with kubeconfig path: {}", kubeconfig_path);
+            Ok(())
+        } else {
+            Err("Invalid configuration for Kubernetes Integration".to_string())
+        }
+    }
+
+    async fn perform_action(&self, action: &str, args: HashMap<String, String>) -> Result<String, String> {
+        match action {
+            "list_pods" => {
+                if let IntegrationConfig::Kubernetes { kubeconfig_path, .. } = &self.config {
+                    println!("Simulating Kubernetes API call to list pods in kubeconfig path: {}", kubeconfig_path);
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    let pods = vec!["pod1".to_string(), "pod2".to_string()];
+                    Ok(serde_json::to_string(&pods).unwrap_or_default())
+                } else {
+                    Err("Kubernetes config not found".to_string())
+                }
+            },
+            _ => Err(format!("Unknown action for Kubernetes Integration: {}", action)),
+        }
+    }
+
+    fn start_background_tasks(&self, event_sender: mpsc::UnboundedSender<IntegrationEvent>) {
+        let config_clone = self.config.clone();
+        let name_clone = self.name.clone();
+        tokio::spawn(async move {
+            // Example: Periodically check Kubernetes cluster status
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                if let IntegrationConfig::Kubernetes { kubeconfig_path, .. } = &config_clone {
+                    // Simulate a check on the Kubernetes cluster
+                    let is_active = true; // In reality, make a Kubernetes API request
+                    if is_active {
+                        let _ = event_sender.send(IntegrationEvent::StatusUpdate(name_clone.clone(), "Kubernetes cluster active.".to_string()));
+                    } else {
+                        let _ = event_sender.send(IntegrationEvent::Error(name_clone.clone(), "Kubernetes cluster inactive!".to_string()));
                     }
                 }
             }

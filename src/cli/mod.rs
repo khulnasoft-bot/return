@@ -61,6 +61,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: WorkflowCommands,
     },
+    /// Manage themes
+    Theme {
+        #[command(subcommand)]
+        action: ThemeCommands,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -119,6 +124,24 @@ pub enum WorkflowCommands {
         name: String,
     },
     /// Import a workflow from a path or URL
+    Import {
+        source: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ThemeCommands {
+    /// List available themes
+    List,
+    /// Apply a specific theme
+    Apply {
+        name: String,
+    },
+    /// Edit a theme file in default editor
+    Edit {
+        name: String,
+    },
+    /// Import a theme from a path or URL
     Import {
         source: String,
     },

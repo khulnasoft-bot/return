@@ -42,8 +42,8 @@ pub struct LanguageManager {
     parsers: Arc<Mutex<HashMap<String, Parser>>>,
     languages: HashMap<String, Language>, // Keyed by language name
     // Add Syntect theme set and syntax set for highlighting
-    // syntax_set: Arc<Mutex<syntect::parsing::SyntaxSet>>,
-    // theme_set: Arc<Mutex<syntect::highlighting::ThemeSet>>,
+    syntax_set: Arc<Mutex<syntect::parsing::SyntaxSet>>,
+    theme_set: Arc<Mutex<syntect::highlighting::ThemeSet>>,
 }
 
 impl LanguageManager {
@@ -51,8 +51,8 @@ impl LanguageManager {
         Self {
             parsers: Arc::new(Mutex::new(HashMap::new())),
             languages: HashMap::new(),
-            // syntax_set: Arc::new(Mutex::new(syntect::parsing::SyntaxSet::load_defaults_newlines())),
-            // theme_set: Arc::new(Mutex::new(syntect::highlighting::ThemeSet::load_defaults())),
+            syntax_set: Arc::new(Mutex::new(syntect::parsing::SyntaxSet::load_defaults_newlines())),
+            theme_set: Arc::new(Mutex::new(syntect::highlighting::ThemeSet::load_defaults())),
         }
     }
 
@@ -150,17 +150,15 @@ impl LanguageManager {
     }
 
     /// Example: Get syntax highlighting for a line of code.
-    pub async fn highlight_line(&self, _language_name: &str, _line: &str) -> Result<Vec<(syntect::highlighting::Style, &str)>> {
-        // This would use Syntect
-        // let syntax_set = self.syntax_set.lock().await;
-        // let theme_set = self.theme_set.lock().await;
-        // let syntax = syntax_set.find_syntax_by_name(language_name)
-        //     .ok_or_else(|| anyhow::anyhow!("Syntax not found for: {}", language_name))?;
-        // let theme = &theme_set.themes["base16-ocean.dark"]; // Or load from config
-        // let mut highlighter = syntect::highlighting::Highlighter::new(theme);
-        // let regions = highlighter.highlight_line(line, syntax, &syntax_set)?;
-        // Ok(regions)
-        Ok(vec![]) // Placeholder
+    pub async fn highlight_line(&self, language_name: &str, line: &str) -> Result<Vec<(syntect::highlighting::Style, &str)>> {
+        let syntax_set = self.syntax_set.lock().await;
+        let theme_set = self.theme_set.lock().await;
+        let syntax = syntax_set.find_syntax_by_name(language_name)
+            .ok_or_else(|| anyhow::anyhow!("Syntax not found for: {}", language_name))?;
+        let theme = &theme_set.themes["base16-ocean.dark"]; // Or load from config
+        let mut highlighter = syntect::highlighting::Highlighter::new(theme);
+        let regions = highlighter.highlight_line(line, syntax, &syntax_set)?;
+        Ok(regions)
     }
 
     /// Registers a new language.

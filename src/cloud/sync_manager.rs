@@ -4,13 +4,35 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use anyhow::Result;
 use tokio::time::{self, Duration};
-use log::{info, error};
+use log::{info, error, warn};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
+/// Represents the data to be synchronized.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncData {
+    pub files: HashMap<String, String>, // Path -> Content
+    pub settings: HashMap<String, String>,
+    pub workflows: HashMap<String, String>,
+    // Add other data types as needed
+}
+
+impl Default for SyncData {
+    fn default() -> Self {
+        Self {
+            files: HashMap::new(),
+            settings: HashMap::new(),
+            workflows: HashMap::new(),
+        }
+    }
+}
+
+/// Events that the SyncManager can send to other parts of the application.
+#[derive(Debug, Clone)]
 pub enum SyncEvent {
-    Start,
-    Progress(String),
-    Complete,
+    SyncStarted,
+    SyncCompleted(Result<()>),
+    DataQueued,
     Error(String),
 }
 
@@ -41,101 +63,218 @@ impl Default for SyncConfig {
 }
 
 pub struct SyncManager {
-    config: SyncConfig,
+    last_sync_time: Arc<RwLock<Option<DateTime<Utc>>>>,
+    data_to_sync: Arc<RwLock<SyncData>>,
+    sync_interval: Duration,
     event_sender: mpsc::Sender<SyncEvent>,
-    // Add internal state for tracking sync status, last sync time, etc.
-    last_sync_time: Option<DateTime<Utc>>,
-    data_to_sync: HashMap<String, String>, // Simplified: key-value store of data needing sync
+    event_receiver: mpsc::Receiver<SyncEvent>,
+    // In a real app, you'd have a client for your cloud storage service
+    // cloud_client: Arc<dyn CloudClient + Send + Sync>,
 }
 
 impl SyncManager {
-    pub fn new(config: SyncConfig, event_sender: mpsc::Sender<SyncEvent>) -> Self {
+    pub fn new(sync_interval_seconds: u64) -> Self {
+        let (tx, rx) = mpsc::channel(100);
         Self {
-            config,
-            event_sender,
-            last_sync_time: None,
-            data_to_sync: HashMap::new(),
+            last_sync_time: Arc::new(RwLock::new(None)),
+            data_to_sync: Arc::new(RwLock::new(SyncData::default())),
+            sync_interval: Duration::from_secs(sync_interval_seconds),
+            event_sender: tx,
+            event_receiver: rx,
+            // cloud_client: Arc::new(MockCloudClient::new()), // Replace with real client
         }
     }
 
-    pub async fn init(&self) -> Result<()> {
-        info!("Cloud sync manager initialized with config: {:?}", self.config);
-        if self.config.enabled {
-            self.start_periodic_sync().await;
-        }
-        Ok(())
-    }
-
+    /// Starts the periodic synchronization task.
     pub async fn start_periodic_sync(&self) {
-        let config = self.config.clone();
-        let sender = self.event_sender.clone();
+        let last_sync_time_clone = self.last_sync_time.clone();
+        let data_to_sync_clone = self.data_to_sync.clone();
+        let sync_interval = self.sync_interval;
+        let event_sender_clone = self.event_sender.clone();
+        // let cloud_client_clone = self.cloud_client.clone();
+
         tokio::spawn(async move {
-            let mut interval = time::interval(Duration::from_secs(config.interval_minutes * 60));
-            interval.tick().await; // Consume the first tick immediately
+            let mut interval = interval(sync_interval);
+            interval.tick().await; // Initial tick to wait for the first interval
 
             loop {
                 interval.tick().await;
-                info!("Initiating periodic cloud sync...");
-                if let Err(e) = Self::perform_sync(&config, &sender).await {
-                    error!("Periodic sync failed: {:?}", e);
-                    let _ = sender.send(SyncEvent::Error(format!("Periodic sync failed: {}", e))).await;
+                info!("Performing periodic sync...");
+                let _ = event_sender_clone.send(SyncEvent::SyncStarted).await;
+
+                // In a real scenario, you'd send data_to_sync_clone to the cloud_client
+                // and handle the response.
+                let mut data_to_sync_write = data_to_sync_clone.write().await;
+                if !data_to_sync_write.files.is_empty() || !data_to_sync_write.settings.is_empty() || !data_to_sync_write.workflows.is_empty() {
+                    info!("Syncing data: {:?}", *data_to_sync_write);
+                    // Simulate network delay and success/failure
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+
+                    // Simulate success
+                    *last_sync_time_clone.write().await = Some(Utc::now());
+                    data_to_sync_write.files.clear();
+                    data_to_sync_write.settings.clear();
+                    data_to_sync_write.workflows.clear();
+                    let _ = event_sender_clone.send(SyncEvent::SyncCompleted(Ok(()))).await;
+                    info!("Periodic sync completed successfully.");
+                } else {
+                    info!("No data to sync during periodic check.");
+                    let _ = event_sender_clone.send(SyncEvent::SyncCompleted(Ok(()))).await; // Still report completion
                 }
             }
         });
     }
 
-    pub async fn trigger_manual_sync(&self, force: bool) -> Result<()> {
-        info!("Triggering manual cloud sync (force: {})...", force);
-        self.event_sender.send(SyncEvent::Start).await?;
-        Self::perform_sync(&self.config, &self.event_sender).await?;
-        self.event_sender.send(SyncEvent::Complete).await?;
-        Ok(())
-    }
+    /// Manually triggers a synchronization.
+    pub async fn trigger_manual_sync(&self) -> Result<()> {
+        info!("Manual sync triggered.");
+        let _ = self.event_sender.send(SyncEvent::SyncStarted).await;
 
-    async fn perform_sync(config: &SyncConfig, sender: &mpsc::Sender<SyncEvent>) -> Result<()> {
-        sender.send(SyncEvent::Progress("Starting sync...".to_string())).await?;
+        let mut data_to_sync_write = self.data_to_sync.write().await;
+        if !data_to_sync_write.files.is_empty() || !data_to_sync_write.settings.is_empty() || !data_to_sync_write.workflows.is_empty() {
+            info!("Syncing data: {:?}", *data_to_sync_write);
+            // Simulate network delay and success/failure
+            tokio::time::sleep(Duration::from_millis(500)).await;
 
-        match config.target {
-            SyncTarget::VercelBlob => {
-                sender.send(SyncEvent::Progress("Syncing to Vercel Blob...".to_string())).await?;
-                // Simulate API call to Vercel Blob
-                tokio::time::sleep(Duration::from_secs(2)).await;
-                // In a real implementation, you'd use reqwest to interact with Vercel Blob API
-                // let client = reqwest::Client::new();
-                // let response = client.post("https://api.vercel.com/v0/blob/put").json(&data).send().await?;
-                // if !response.status().is_success() {
-                //     return Err(anyhow::anyhow!("Vercel Blob sync failed: {:?}", response.status()));
-                // }
-                sender.send(SyncEvent::Progress("Vercel Blob sync complete.".to_string())).await?;
-            },
-            SyncTarget::GitHubGist => {
-                sender.send(SyncEvent::Progress("Syncing to GitHub Gist...".to_string())).await?;
-                // Simulate API call to GitHub Gist
-                tokio::time::sleep(Duration::from_secs(3)).await;
-                sender.send(SyncEvent::Progress("GitHub Gist sync complete.".to_string())).await?;
-            },
-            SyncTarget::Custom(ref url) => {
-                sender.send(SyncEvent::Progress(format!("Syncing to custom endpoint: {}...", url))).await?;
-                // Simulate API call to custom endpoint
-                tokio::time::sleep(Duration::from_secs(4)).await;
-                sender.send(SyncEvent::Progress("Custom endpoint sync complete.".to_string())).await?;
-            },
+            // Simulate success
+            *self.last_sync_time.write().await = Some(Utc::now());
+            data_to_sync_write.files.clear();
+            data_to_sync_write.settings.clear();
+            data_to_sync_write.workflows.clear();
+            let _ = self.event_sender.send(SyncEvent::SyncCompleted(Ok(()))).await;
+            info!("Manual sync completed successfully.");
+            Ok(())
+        } else {
+            info!("No data to sync during manual trigger.");
+            let _ = self.event_sender.send(SyncEvent::SyncCompleted(Ok(()))).await;
+            Ok(())
         }
-
-        sender.send(SyncEvent::Progress("Sync successful!".to_string())).await?;
-        Ok(())
     }
 
-    pub fn mark_data_for_sync(&mut self, key: String, value: String) {
-        self.data_to_sync.insert(key.clone(), value.clone());
-        let _ = self.event_sender.send(SyncEvent::Progress(format!("Data changed: {} -> {}", key, value)));
+    /// Queues data to be synchronized.
+    pub async fn queue_data(&self, data: SyncData) {
+        let mut current_data = self.data_to_sync.write().await;
+        current_data.files.extend(data.files);
+        current_data.settings.extend(data.settings);
+        current_data.workflows.extend(data.workflows);
+        let _ = self.event_sender.send(SyncEvent::DataQueued).await;
+        info!("Data queued for sync.");
     }
 
-    pub fn get_last_sync_time(&self) -> Option<DateTime<Utc>> {
-        self.last_sync_time
+    /// Returns a receiver for sync events.
+    pub fn subscribe_events(&self) -> mpsc::Receiver<SyncEvent> {
+        self.event_receiver.clone()
+    }
+
+    /// Gets the last synchronization time.
+    pub async fn get_last_sync_time(&self) -> Option<DateTime<Utc>> {
+        *self.last_sync_time.read().await
+    }
+
+    /// Gets the current data queued for synchronization.
+    pub async fn get_queued_data(&self) -> SyncData {
+        self.data_to_sync.read().await.clone()
     }
 }
 
 pub fn init() {
-    println!("cloud/sync_manager module loaded");
+    info!("cloud/sync_manager module loaded");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::time::timeout;
+
+    #[tokio::test]
+    async fn test_sync_manager_new() {
+        let manager = SyncManager::new(60);
+        assert!(manager.get_last_sync_time().await.is_none());
+        assert!(manager.get_queued_data().await.files.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_sync_manager_queue_data() {
+        let manager = SyncManager::new(60);
+        let mut rx = manager.subscribe_events();
+
+        let mut data = SyncData::default();
+        data.files.insert("file1.txt".to_string(), "content1".to_string());
+        manager.queue_data(data.clone()).await;
+
+        assert_eq!(manager.get_queued_data().await.files.len(), 1);
+        assert_eq!(rx.recv().await, Some(SyncEvent::DataQueued));
+    }
+
+    #[tokio::test]
+    async fn test_sync_manager_trigger_manual_sync() {
+        let manager = SyncManager::new(60);
+        let mut rx = manager.subscribe_events();
+
+        let mut data = SyncData::default();
+        data.files.insert("file1.txt".to_string(), "content1".to_string());
+        manager.queue_data(data).await;
+        let _ = rx.recv().await; // Consume DataQueued event
+
+        let sync_result = manager.trigger_manual_sync().await;
+        assert!(sync_result.is_ok());
+
+        assert_eq!(rx.recv().await, Some(SyncEvent::SyncStarted));
+        assert!(matches!(rx.recv().await, Some(SyncEvent::SyncCompleted(Ok(_)))));
+        assert!(manager.get_last_sync_time().await.is_some());
+        assert!(manager.get_queued_data().await.files.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_sync_manager_periodic_sync() {
+        let manager = SyncManager::new(1); // 1 second interval for testing
+        let mut rx = manager.subscribe_events();
+
+        let mut data = SyncData::default();
+        data.files.insert("file_periodic.txt".to_string(), "content_periodic".to_string());
+        manager.queue_data(data).await;
+        let _ = rx.recv().await; // Consume DataQueued event
+
+        manager.start_periodic_sync().await;
+
+        // Wait for the first periodic sync to start and complete
+        let event1 = timeout(Duration::from_secs(2), rx.recv()).await.unwrap().unwrap();
+        assert_eq!(event1, SyncEvent::SyncStarted);
+
+        let event2 = timeout(Duration::from_secs(2), rx.recv()).await.unwrap().unwrap();
+        assert!(matches!(event2, SyncEvent::SyncCompleted(Ok(_))));
+
+        assert!(manager.get_last_sync_time().await.is_some());
+        assert!(manager.get_queued_data().await.files.is_empty());
+
+        // Queue more data and wait for the next periodic sync
+        let mut data2 = SyncData::default();
+        data2.files.insert("file_periodic2.txt".to_string(), "content_periodic2".to_string());
+        manager.queue_data(data2).await;
+        let _ = rx.recv().await; // Consume DataQueued event
+
+        let event3 = timeout(Duration::from_secs(2), rx.recv()).await.unwrap().unwrap();
+        assert_eq!(event3, SyncEvent::SyncStarted);
+
+        let event4 = timeout(Duration::from_secs(2), rx.recv()).await.unwrap().unwrap();
+        assert!(matches!(event4, SyncEvent::SyncCompleted(Ok(_))));
+    }
+
+    #[tokio::test]
+    async fn test_sync_manager_no_data_periodic_sync() {
+        let manager = SyncManager::new(1); // 1 second interval for testing
+        let mut rx = manager.subscribe_events();
+
+        manager.start_periodic_sync().await;
+
+        // Wait for the first periodic sync to start and complete (should be no data)
+        let event1 = timeout(Duration::from_secs(2), rx.recv()).await.unwrap().unwrap();
+        assert_eq!(event1, SyncEvent::SyncStarted);
+
+        let event2 = timeout(Duration::from_secs(2), rx.recv()).await.unwrap().unwrap();
+        assert!(matches!(event2, SyncEvent::SyncCompleted(Ok(_))));
+
+        assert!(manager.get_last_sync_time().await.is_some()); // Should still update last sync time
+        assert!(manager.get_queued_data().await.files.is_empty());
+    }
 }

@@ -25,6 +25,8 @@ pub struct BenchmarkResult {
     pub name: String,
     pub duration: Duration,
     pub iterations: u32,
+    pub success: bool,
+    pub details: String,
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +39,9 @@ impl BenchmarkSuite {
         let mut summary = String::new();
         for res in &self.results {
             summary.push_str(&format!("  {}: {:.2?} ({} iterations)\n", res.name, res.duration, res.iterations));
+            if !res.success {
+                summary.push_str(&format!("    Details: {}\n", res.details));
+            }
         }
         summary
     }
@@ -114,6 +119,8 @@ impl PerformanceBenchmarks {
             name,
             duration: start.elapsed(),
             iterations,
+            success,
+            details,
         }
     }
 
@@ -141,6 +148,8 @@ impl PerformanceBenchmarks {
             name,
             duration: start.elapsed(),
             iterations,
+            success,
+            details: if matches_found != iterations { "Not all iterations found matches.".to_string() } else { "".to_string() },
         }
     }
 
@@ -165,6 +174,8 @@ impl PerformanceBenchmarks {
             name,
             duration: start.elapsed(),
             iterations,
+            success,
+            details: "".to_string(),
         }
     }
 
@@ -199,6 +210,8 @@ impl PerformanceBenchmarks {
             name,
             duration: start.elapsed(),
             iterations,
+            success,
+            details: "".to_string(),
         }
     }
 
@@ -217,6 +230,8 @@ impl PerformanceBenchmarks {
             name,
             duration: total_duration / iterations,
             iterations,
+            success: true,
+            details: "".to_string(),
         }
     }
 
@@ -235,6 +250,8 @@ impl PerformanceBenchmarks {
             name,
             duration: total_duration / iterations,
             iterations,
+            success: true,
+            details: "".to_string(),
         }
     }
 
@@ -265,6 +282,8 @@ impl PerformanceBenchmarks {
             name,
             duration: start.elapsed(),
             iterations,
+            success,
+            details: "".to_string(),
         }
     }
 
@@ -290,6 +309,8 @@ impl PerformanceBenchmarks {
             name,
             duration: start.elapsed(),
             iterations,
+            success,
+            details: "".to_string(),
         }
     }
 
@@ -327,6 +348,8 @@ impl PerformanceBenchmarks {
             name,
             duration: start.elapsed(),
             iterations,
+            success,
+            details: "".to_string(),
         }
     }
 
@@ -349,6 +372,8 @@ impl PerformanceBenchmarks {
             name,
             duration: total_duration / iterations,
             iterations,
+            success: true,
+            details: "".to_string(),
         }
     }
 }

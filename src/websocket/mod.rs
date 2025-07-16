@@ -5,6 +5,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use futures_util::{StreamExt, SinkExt};
 use std::net::SocketAddr;
+use std::collections::HashMap;
 
 /// Events from the WebSocket server.
 #[derive(Debug, Clone)]
@@ -20,7 +21,7 @@ pub enum WebSocketEvent {
 pub struct WebSocketServer {
     event_sender: mpsc::Sender<WebSocketEvent>,
     listen_addr: SocketAddr,
-    // Potentially store active client connections for broadcasting
+    clients: HashMap<SocketAddr, mpsc::Sender<Message>>, // Store active client connections for broadcasting
 }
 
 impl WebSocketServer {
@@ -29,6 +30,7 @@ impl WebSocketServer {
         Self {
             event_sender: tx,
             listen_addr: "127.0.0.1:9000".parse().unwrap(), // Default listen address
+            clients: HashMap::new(),
         }
     }
 
@@ -47,12 +49,14 @@ impl WebSocketServer {
         self.event_sender.send(WebSocketEvent::ServerStarted(self.listen_addr)).await?;
 
         let sender_clone = self.event_sender.clone();
+        let mut clients = self.clients.clone();
         tokio::spawn(async move {
             while let Ok((stream, peer_addr)) = listener.accept().await {
                 info!("New WebSocket connection from: {}", peer_addr);
                 let sender_clone_inner = sender_clone.clone();
+                let mut clients_inner = clients.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = Self::handle_connection(stream, peer_addr, sender_clone_inner).await {
+                    if let Err(e) = Self::handle_connection(stream, peer_addr, sender_clone_inner, &mut clients_inner).await {
                         log::error!("Error handling WebSocket connection from {}: {}", peer_addr, e);
                         let _ = sender_clone.send(WebSocketEvent::Error(peer_addr, e.to_string())).await;
                     }
@@ -63,16 +67,19 @@ impl WebSocketServer {
         Ok(())
     }
 
-    async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, event_sender: mpsc::Sender<WebSocketEvent>) -> Result<()> {
+    async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, event_sender: mpsc::Sender<WebSocketEvent>, clients: &mut HashMap<SocketAddr, mpsc::Sender<Message>>) -> Result<()> {
         event_sender.send(WebSocketEvent::ClientConnected(peer_addr)).await?;
         let ws_stream = accept_async(stream).await?;
         let (mut write, mut read) = ws_stream.split();
+
+        let (client_tx, mut client_rx) = mpsc::channel(100);
+        clients.insert(peer_addr, client_tx.clone());
 
         while let Some(message) = read.next().await {
             match message {
                 Ok(Message::Text(text)) => {
                     info!("Received message from {}: {}", peer_addr, text);
-                    event_sender.send(WebSocketEvent::MessageReceived(peer_addr, text)).await?;
+                    event_sender.send(WebSocketEvent::MessageReceived(peer_addr, text.clone())).await?;
                     // Echo back for demonstration
                     write.send(Message::Text(format!("Echo: {}", text))).await?;
                 },
@@ -99,22 +106,27 @@ impl WebSocketServer {
             }
         }
 
+        clients.remove(&peer_addr);
         event_sender.send(WebSocketEvent::ClientDisconnected(peer_addr)).await?;
         info!("Client {} disconnected.", peer_addr);
         Ok(())
     }
 
-    /// Sends a message to a specific client (mock).
+    /// Sends a message to a specific client.
     pub async fn send_to_client(&self, client_addr: SocketAddr, message: String) -> Result<()> {
-        info!("Sending message to client {} (mock): {}", client_addr, message);
-        // In a real implementation, you'd look up the client's sender half and send
+        info!("Sending message to client {}: {}", client_addr, message);
+        if let Some(sender) = self.clients.get(&client_addr) {
+            sender.send(Message::Text(message)).await?;
+        }
         Ok(())
     }
 
-    /// Broadcasts a message to all connected clients (mock).
+    /// Broadcasts a message to all connected clients.
     pub async fn broadcast(&self, message: String) -> Result<()> {
-        info!("Broadcasting message to all clients (mock): {}", message);
-        // In a real implementation, iterate over all connected clients and send
+        info!("Broadcasting message to all clients: {}", message);
+        for sender in self.clients.values() {
+            sender.send(Message::Text(message.clone())).await?;
+        }
         Ok(())
     }
 }

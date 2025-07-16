@@ -21,6 +21,7 @@ pub struct CollapsibleBlock<'a, Message> {
     content: Element<'a, Message>,
     is_collapsed: bool,
     on_toggle: Box<dyn Fn(bool) -> Message + 'a>,
+    is_active: bool,
 }
 
 impl<'a, Message> CollapsibleBlock<'a, Message> {
@@ -33,6 +34,7 @@ impl<'a, Message> CollapsibleBlock<'a, Message> {
             content,
             is_collapsed,
             on_toggle: Box::new(on_toggle),
+            is_active: false,
         }
     }
 
@@ -69,6 +71,10 @@ impl<'a, Message> CollapsibleBlock<'a, Message> {
         })
         .into()
     }
+
+    pub fn set_active(&mut self, active: bool) {
+        self.is_active = active;
+    }
 }
 
 pub fn init() {
@@ -82,15 +88,12 @@ impl CollapsibleBlock<'static, CollapsibleBlockMessage> {
             content: Paragraph::new(content).into(),
             is_collapsed: false,
             on_toggle: Box::new(|is_collapsed| CollapsibleBlockMessage::Toggle),
+            is_active: false,
         }
     }
 
     pub fn toggle_collapse(&mut self) {
         self.is_collapsed = !self.is_collapsed;
-    }
-
-    pub fn set_active(&mut self, active: bool) {
-        // Placeholder for setting active state in TUI context
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect) {

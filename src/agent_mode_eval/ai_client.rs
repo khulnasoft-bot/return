@@ -24,12 +24,6 @@ pub enum AIStreamChunk {
     Error(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AiConfig {
-    pub api_key: String,
-    pub model: String,
-}
-
 #[derive(Debug, Clone)]
 pub enum AIClientError {
     RequestFailed(String),

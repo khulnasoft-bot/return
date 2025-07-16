@@ -1,121 +1,97 @@
+use anyhow::Result;
+use log::info;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
 pub mod preferences;
 pub mod theme;
 pub mod yaml_theme;
 pub mod yaml_theme_manager;
 
-use anyhow::Result;
 use preferences::UserPreferences;
-use theme::Theme;
 use yaml_theme_manager::YamlThemeManager;
-use std::path::PathBuf;
-use directories::ProjectDirs;
-use once_cell::sync::Lazy;
-use tokio::sync::RwLock;
-use std::sync::Arc;
-use log::info;
 
-pub static PROJECT_DIRS: Lazy<Option<ProjectDirs>> = Lazy::new(|| {
-    ProjectDirs::from("com", "NeoTerm", "NeoTerm")
-});
-
-pub static CONFIG_DIR: Lazy<PathBuf> = Lazy::new(|| {
-    PROJECT_DIRS.as_ref()
-        .map(|dirs| dirs.config_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("./config")) // Fallback for systems without standard dirs
-});
-
-pub static DATA_DIR: Lazy<PathBuf> = Lazy::new(|| {
-    PROJECT_DIRS.as_ref()
-        .map(|dirs| dirs.data_local_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("./data")) // Fallback
-});
-
-pub static CACHE_DIR: Lazy<PathBuf> = Lazy::new(|| {
-    PROJECT_DIRS.as_ref()
-        .map(|dirs| dirs.cache_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("./cache")) // Fallback
-});
-
-#[derive(Debug, Clone)]
-pub struct AppConfig {
-    pub preferences: UserPreferences,
-    // Add other top-level config items here if needed
-    // e.g., environment profiles, plugin configurations
-    pub env_profiles: preferences::EnvironmentProfiles,
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            preferences: UserPreferences::default(),
-            env_profiles: preferences::EnvironmentProfiles::default(),
-        }
-    }
-}
-
-impl AppConfig {
-    pub async fn load() -> Result<Self> {
-        let preferences = UserPreferences::load().await?;
-        // Load other config components here if they have separate files
-        Ok(Self {
-            preferences,
-            env_profiles: preferences::EnvironmentProfiles::default(), // For now, use default or load from preferences
-        })
-    }
-}
-
+/// Manages all application configuration, including user preferences and themes.
 pub struct ConfigManager {
-    preferences: Arc<RwLock<UserPreferences>>,
-    theme_manager: Arc<YamlThemeManager>,
+    user_preferences: Arc<RwLock<UserPreferences>>,
+    yaml_theme_manager: Arc<RwLock<YamlThemeManager>>,
 }
 
 impl ConfigManager {
     pub async fn new() -> Result<Self> {
-        // Ensure config directories exist
-        tokio::fs::create_dir_all(&*CONFIG_DIR).await?;
-        tokio::fs::create_dir_all(&*DATA_DIR).await?;
-        tokio::fs::create_dir_all(&*CACHE_DIR).await?;
+        let user_preferences = Arc::new(RwLock::new(UserPreferences::load_or_default().await?));
+        let yaml_theme_manager = Arc::new(RwLock::new(YamlThemeManager::new()));
 
-        let preferences = Arc::new(RwLock::new(UserPreferences::load().await?));
-        let theme_manager = Arc::new(YamlThemeManager::new());
+        // Initialize theme manager (e.g., load default themes)
+        yaml_theme_manager.write().await.init().await?;
 
         Ok(Self {
-            preferences,
-            theme_manager,
+            user_preferences,
+            yaml_theme_manager,
         })
     }
 
-    pub async fn init(&self) -> Result<()> {
-        info!("Config manager initialized.");
-        self.theme_manager.init().await?;
-        Ok(())
+    /// Gets a read-locked reference to the user preferences.
+    pub fn get_preferences(&self) -> Arc<RwLock<UserPreferences>> {
+        self.user_preferences.clone()
     }
 
-    pub async fn get_preferences(&self) -> UserPreferences {
-        self.preferences.read().await.clone()
+    /// Gets a read-locked reference to the YAML theme manager.
+    pub fn get_theme_manager(&self) -> Arc<RwLock<YamlThemeManager>> {
+        self.yaml_theme_manager.clone()
     }
 
-    pub async fn update_preferences(&self, new_prefs: UserPreferences) -> Result<()> {
-        let mut prefs = self.preferences.write().await;
-        *prefs = new_prefs;
-        prefs.save().await?;
-        Ok(())
-    }
-
-    pub async fn get_current_theme(&self) -> Result<Theme> {
-        let prefs = self.preferences.read().await;
-        self.theme_manager.get_theme(&prefs.ui.theme_name).await
-    }
-
-    pub async fn get_theme_manager(&self) -> Arc<YamlThemeManager> {
-        self.theme_manager.clone()
+    /// Saves the current user preferences to disk.
+    pub async fn save_preferences(&self) -> Result<()> {
+        self.user_preferences.read().await.save().await
     }
 }
 
 pub fn init() {
-    info!("Config module initialized.");
-    // Accessing lazy statics here to ensure they are initialized early
-    let _ = &*CONFIG_DIR;
-    let _ = &*DATA_DIR;
-    let _ = &*CACHE_DIR;
+    info!("config module loaded");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::fs;
+
+    // Helper to clean up test files
+    async fn cleanup_test_files() {
+        let _ = fs::remove_file("preferences.yaml").await;
+        let _ = fs::remove_dir_all("themes").await;
+    }
+
+    #[tokio::test]
+    async fn test_config_manager_new() {
+        cleanup_test_files().await;
+        let manager = ConfigManager::new().await.unwrap();
+
+        // Check if preferences are loaded (default in this case)
+        let prefs = manager.get_preferences().read().await;
+        assert_eq!(prefs.general.font_size, 14);
+
+        // Check if theme manager is initialized (should have default themes)
+        let theme_manager = manager.get_theme_manager().read().await;
+        assert!(!theme_manager.list_themes().await.is_empty());
+
+        cleanup_test_files().await;
+    }
+
+    #[tokio::test]
+    async fn test_config_manager_save_preferences() {
+        cleanup_test_files().await;
+        let manager = ConfigManager::new().await.unwrap();
+
+        // Modify a preference
+        manager.get_preferences().write().await.general.font_size = 16;
+        manager.save_preferences().await.unwrap();
+
+        // Load a new manager to verify persistence
+        let new_manager = ConfigManager::new().await.unwrap();
+        let new_prefs = new_manager.get_preferences().read().await;
+        assert_eq!(new_prefs.general.font_size, 16);
+
+        cleanup_test_files().await;
+    }
 }

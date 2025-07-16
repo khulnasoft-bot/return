@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use log::info;
 
 // This module implements a Sum Tree (also known as a Fenwick tree or Binary Indexed Tree),
 // a data structure that can efficiently update elements and calculate prefix sums.
@@ -22,11 +23,11 @@ impl SumTree {
     }
 
     pub fn init(&self) {
-        log::info!("Sum tree manager initialized.");
+        info!("Sum tree manager initialized.");
     }
 
     /// Creates a new SumTree from a vector of values.
-    pub fn create_tree(&self, values: Vec<f64>) -> SumTree {
+    pub fn create_tree(values: Vec<f64>) -> SumTree {
         let capacity = values.len();
         let mut tree = SumTree::new(capacity);
         for (i, &val) in values.iter().enumerate() {
@@ -38,7 +39,7 @@ impl SumTree {
     /// Updates the value at a given index and propagates the change up the tree.
     pub fn update(&mut self, mut idx: usize, val: f64) {
         if idx >= self.capacity {
-            log::warn!("Index {} out of bounds for SumTree with capacity {}", idx, self.capacity);
+            info!("Index {} out of bounds for SumTree with capacity {}", idx, self.capacity);
             return;
         }
         let change = val - self.data[idx];
@@ -57,7 +58,7 @@ impl SumTree {
     /// Queries the sum of values up to a given index (prefix sum).
     pub fn query_prefix_sum(&self, mut idx: usize) -> f64 {
         if idx >= self.capacity {
-            log::warn!("Query index {} out of bounds for SumTree with capacity {}", idx, self.capacity);
+            info!("Query index {} out of bounds for SumTree with capacity {}", idx, self.capacity);
             idx = self.capacity - 1; // Clamp to max index
         }
         let mut sum = 0.0;

@@ -10,10 +10,12 @@ use futures_util::StreamExt;
 use chrono::{DateTime, Local};
 use clap::Parser;
 use anyhow::Result;
+use log::{error, info};
 use itertools::Itertools; // For .join() on iterators
 
 // Import modules
 mod ai;
+mod agent_mode_eval;
 mod api;
 mod asset_macro;
 mod block;
@@ -29,43 +31,52 @@ mod input;
 mod integration;
 mod languages;
 mod lpc;
+mod main_loop;
 mod markdown_parser;
 mod mcq;
 mod natural_language_detection;
 mod performance;
 mod plugins;
-mod resources;
+mod renderer;
 mod serve_wasm;
 mod settings;
 mod shell;
 mod string_offset;
 mod sum_tree;
-mod syntax_tree;
 mod ui;
 mod virtual_fs;
 mod watcher;
 mod websocket;
 mod workflows;
-mod agent_mode_eval;
 
+// Use statements for key components
 use ai::assistant::Assistant;
-use agent_mode_eval::{AgentMode, AgentConfig, AgentMessage};
+use ai::context::AIContext; // Import AIContext
+use agent_mode_eval::{AgentConfig, AgentMode};
+use cli::{Cli, CliCommand};
+use command::CommandManager;
+use config::ConfigManager;
+use plugins::plugin_manager::PluginManager;
+use virtual_fs::VirtualFileSystem;
+use watcher::Watcher;
+use workflows::manager::WorkflowManager;
+
 use block::{Block, BlockContent};
 use shell::ShellManager;
 use input::{EnhancedTextInput, Message as InputMessage, HistoryDirection, Direction};
-use config::{AppConfig, ConfigManager, preferences::UserPreferences};
+use config::{AppConfig, ConfigManager as IcedConfigManager, preferences::UserPreferences};
 use crate::{
     ui::command_palette::{CommandPalette, CommandAction},
     ui::ai_sidebar::AISidebar,
     command::pty::{PtyManager, CommandStatus},
     workflows::debugger::WorkflowDebugger,
-    plugins::plugin_manager::PluginManager,
-    collaboration::session_sharing::SessionSharingManager,
+    plugins::plugin_manager::PluginManager as IcedPluginManager,
+    collaboration::session_sharing::SessionSharingManager as IcedSessionSharingManager,
     cloud::sync_manager::{CloudSyncManager as SyncManager, SyncEvent, SyncConfig},
     performance::benchmarks::{PerformanceBenchmarks, BenchmarkSuite, BenchmarkResult},
-    cli::{Cli, Commands, ConfigCommands, AiCommands, PluginCommands, WorkflowCommands},
+    cli::{Cli as IcedCli, Commands, ConfigCommands, AiCommands, PluginCommands, WorkflowCommands},
 };
-use command::{CommandManager, CommandEvent};
+use command::{CommandManager as IcedCommandManager, CommandEvent};
 use drive::{DriveManager, DriveConfig, DriveEvent};
 use fuzzy_match::FuzzyMatchManager;
 use graphql::build_schema;
@@ -76,15 +87,15 @@ use mcq::McqManager;
 use natural_language_detection::NaturalLanguageDetector;
 use resources::ResourceManager;
 use settings::SettingsManager;
-use shell::ShellManager;
+use shell::ShellManager as IcedShellManager;
 use string_offset::StringOffsetManager;
 use sum_tree::SumTreeManager;
 use syntax_tree::SyntaxTreeManager;
-use virtual_fs::VirtualFileSystem;
-use watcher::{Watcher, WatcherEvent};
+use virtual_fs::VirtualFileSystem as IcedVirtualFileSystem;
+use watcher::{Watcher as IcedWatcher, WatcherEvent};
 use websocket::WebSocketServer;
 use workflows::executor::{WorkflowExecutor, WorkflowExecutionEvent};
-use workflows::manager::WorkflowManager;
+use workflows::manager::WorkflowManager as IcedWorkflowManager;
 use collaboration::session_sharing::CollaborationEvent;
 use workflows::Workflow;
 use serve_wasm::WasmServer; // Import WasmServer
@@ -112,13 +123,13 @@ pub struct NeoTerm {
    workflow_event_rx: mpsc::Receiver<WorkflowExecutionEvent>,
 
    // Managers (Arc'd for sharing)
-   config_manager: Arc<ConfigManager>,
+   config_manager: Arc<IcedConfigManager>,
    ai_assistant: Arc<RwLock<Assistant>>,
-   workflow_manager: Arc<WorkflowManager>,
-   plugin_manager: Arc<PluginManager>,
+   workflow_manager: Arc<IcedWorkflowManager>,
+   plugin_manager: Arc<IcedPluginManager>,
    sync_manager: Arc<SyncManager>,
-   collaboration_manager: Arc<SessionSharingManager>,
-   command_manager: Arc<CommandManager>,
+   collaboration_manager: Arc<IcedSessionSharingManager>,
+   command_manager: Arc<IcedCommandManager>,
    drive_manager: Arc<DriveManager>,
    fuzzy_match_manager: Arc<FuzzyMatchManager>,
    graphql_schema: Arc<graphql::AppSchema>,
@@ -129,12 +140,12 @@ pub struct NeoTerm {
    natural_language_detector: Arc<NaturalLanguageDetector>,
    resource_manager: Arc<ResourceManager>,
    settings_manager: Arc<SettingsManager>,
-   shell_manager: Arc<ShellManager>,
+   shell_manager: Arc<IcedShellManager>,
    string_offset_manager: Arc<StringOffsetManager>,
    sum_tree_manager: Arc<SumTreeManager>,
    syntax_tree_manager: Arc<SyntaxTreeManager>,
-   virtual_file_system: Arc<VirtualFileSystem>,
-   watcher: Arc<Watcher>,
+   virtual_file_system: Arc<IcedVirtualFileSystem>,
+   watcher: Arc<IcedWatcher>,
    websocket_server: Arc<WebSocketServer>,
    wasm_server: Arc<WasmServer>,
    preferences: UserPreferences,

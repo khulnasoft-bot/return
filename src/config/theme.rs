@@ -1,68 +1,114 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use log::info;
+use iced::Color;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Represents a complete theme for the application.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Theme {
     pub name: String,
-    pub description: String,
-    pub colors: HashMap<String, String>, // e.g., "background": "#1e1e1e", "foreground": "#d4d4d4"
-    pub syntax_highlighting: HashMap<String, String>, // e.g., "keyword": "#569cd6"
-    pub ui_elements: HashMap<String, String>, // e.g., "border": "#444444", "selection": "#264f78"
+    pub background: Color,
+    pub foreground: Color,
+    pub primary: Color,
+    pub secondary: Color,
+    pub accent: Color,
+    pub text_color: Color,
+    pub border_color: Color,
+    pub selection_color: Color,
+    pub error_color: Color,
+    pub warning_color: Color,
+    pub info_color: Color,
+    pub success_color: Color,
+    pub terminal_colors: TerminalColors,
+    // Add more theme-specific properties as needed
+}
+
+/// Represents the 16 ANSI terminal colors.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TerminalColors {
+    pub black: Color,
+    pub red: Color,
+    pub green: Color,
+    pub yellow: Color,
+    pub blue: Color,
+    pub magenta: Color,
+    pub cyan: Color,
+    pub white: Color,
+    pub bright_black: Color,
+    pub bright_red: Color,
+    pub bright_green: Color,
+    pub bright_yellow: Color,
+    pub bright_blue: Color,
+    pub bright_magenta: Color,
+    pub bright_cyan: Color,
+    pub bright_white: Color,
 }
 
 impl Default for Theme {
     fn default() -> Self {
+        // A simple light theme as default
         Self {
-            name: "default".to_string(),
-            description: "A default dark theme.".to_string(),
-            colors: [
-                ("background".to_string(), "#1e1e1e".to_string()),
-                ("foreground".to_string(), "#d4d4d4".to_string()),
-                ("cursor".to_string(), "#ffffff".to_string()),
-                ("black".to_string(), "#000000".to_string()),
-                ("red".to_string(), "#cd3131".to_string()),
-                ("green".to_string(), "#0dbc79".to_string()),
-                ("yellow".to_string(), "#e5e510".to_string()),
-                ("blue".to_string(), "#2472c8".to_string()),
-                ("magenta".to_string(), "#bc3fbc".to_string()),
-                ("cyan".to_string(), "#03babc".to_string()),
-                ("white".to_string(), "#e0e0e0".to_string()),
-                ("bright_black".to_string(), "#666666".to_string()),
-                ("bright_red".to_string(), "#f14c4c".to_string()),
-                ("bright_green".to_string(), "#23d18b".to_string()),
-                ("bright_yellow".to_string(), "#f5f543".to_string()),
-                ("bright_blue".to_string(), "#3b8eea".to_string()),
-                ("bright_magenta".to_string(), "#d670d6".to_string()),
-                ("bright_cyan".to_string(), "#29b8bd".to_string()),
-                ("bright_white".to_string(), "#e6e6e6".to_string()),
-            ].iter().cloned().collect(),
-            syntax_highlighting: [
-                ("keyword".to_string(), "#569cd6".to_string()),
-                ("string".to_string(), "#ce9178".to_string()),
-                ("comment".to_string(), "#6a9955".to_string()),
-                ("number".to_string(), "#b5cea8".to_string()),
-                ("function".to_string(), "#dcdcaa".to_string()),
-                ("variable".to_string(), "#9cdcfe".to_string()),
-            ].iter().cloned().collect(),
-            ui_elements: [
-                ("border".to_string(), "#444444".to_string()),
-                ("selection".to_string(), "#264f78".to_string()),
-                ("tab_active".to_string(), "#333333".to_string()),
-                ("tab_inactive".to_string(), "#252526".to_string()),
-                ("status_bar".to_string(), "#007acc".to_string()),
-                ("command_palette_bg".to_string(), "#252526".to_string()),
-                ("command_palette_fg".to_string(), "#d4d4d4".to_string()),
-            ].iter().cloned().collect(),
+            name: "Default Light".to_string(),
+            background: Color::from_rgb(0.95, 0.95, 0.95), // Light gray
+            foreground: Color::BLACK,
+            primary: Color::from_rgb(0.2, 0.6, 0.8), // Blue
+            secondary: Color::from_rgb(0.8, 0.4, 0.2), // Orange
+            accent: Color::from_rgb(0.6, 0.8, 0.2), // Green
+            text_color: Color::BLACK,
+            border_color: Color::from_rgb(0.8, 0.8, 0.8),
+            selection_color: Color::from_rgba(0.2, 0.6, 0.8, 0.2),
+            error_color: Color::from_rgb(0.8, 0.2, 0.2),
+            warning_color: Color::from_rgb(0.8, 0.6, 0.2),
+            info_color: Color::from_rgb(0.2, 0.4, 0.8),
+            success_color: Color::from_rgb(0.2, 0.8, 0.2),
+            terminal_colors: TerminalColors::default(),
         }
     }
 }
 
-impl Theme {
-    pub fn get_color(&self, name: &str) -> Option<&String> {
-        self.colors.get(name)
-            .or_else(|| self.syntax_highlighting.get(name))
-            .or_else(|| self.ui_elements.get(name))
+impl Default for TerminalColors {
+    fn default() -> Self {
+        // Standard ANSI colors
+        Self {
+            black: Color::from_rgb(0.0, 0.0, 0.0),
+            red: Color::from_rgb(0.8, 0.0, 0.0),
+            green: Color::from_rgb(0.0, 0.8, 0.0),
+            yellow: Color::from_rgb(0.8, 0.8, 0.0),
+            blue: Color::from_rgb(0.0, 0.0, 0.8),
+            magenta: Color::from_rgb(0.8, 0.0, 0.8),
+            cyan: Color::from_rgb(0.0, 0.8, 0.8),
+            white: Color::from_rgb(0.8, 0.8, 0.8),
+            bright_black: Color::from_rgb(0.3, 0.3, 0.3),
+            bright_red: Color::from_rgb(1.0, 0.0, 0.0),
+            bright_green: Color::from_rgb(0.0, 1.0, 0.0),
+            bright_yellow: Color::from_rgb(1.0, 1.0, 0.0),
+            bright_blue: Color::from_rgb(0.0, 0.0, 1.0),
+            bright_magenta: Color::from_rgb(1.0, 0.0, 1.0),
+            bright_cyan: Color::from_rgb(0.0, 1.0, 1.0),
+            bright_white: Color::from_rgb(1.0, 1.0, 1.0),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_theme() {
+        let theme = Theme::default();
+        assert_eq!(theme.name, "Default Light");
+        assert_eq!(theme.background, Color::from_rgb(0.95, 0.95, 0.95));
+        assert_eq!(theme.foreground, Color::BLACK);
+        assert_eq!(theme.terminal_colors.black, Color::from_rgb(0.0, 0.0, 0.0));
+        assert_eq!(theme.terminal_colors.bright_white, Color::from_rgb(1.0, 1.0, 1.0));
+    }
+
+    #[test]
+    fn test_terminal_colors_default() {
+        let term_colors = TerminalColors::default();
+        assert_eq!(term_colors.red, Color::from_rgb(0.8, 0.0, 0.0));
+        assert_eq!(term_colors.bright_blue, Color::from_rgb(0.0, 0.0, 1.0));
     }
 }
 

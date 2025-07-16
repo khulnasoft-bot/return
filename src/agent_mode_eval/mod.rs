@@ -5,38 +5,30 @@ use tokio::sync::{mpsc, RwLock};
 use uuid::Uuid;
 use async_trait::async_trait;
 use chrono::Utc;
-use crate::agent_mode_eval::ai_client::{AIClient, OpenAIClient, AIClientError, AIStreamChunk};
 use crate::block::{Block as UIBlock, Block, BlockContent, BlockId, BlockType}; // Alias to avoid conflict with Message
-use crate::command::CommandExecutor;
-use crate::config::Config;
+use crate::command::CommandManager;
+use crate::config::ConfigManager; // Use ConfigManager to get AI preferences
 use crate::agent_mode_eval::conversation::{Conversation, Message, MessageRole};
 use crate::agent_mode_eval::tools::{Tool, ToolRegistry, ToolCall, ToolResult};
-use ai_client::{AIClient, ChatMessage, AiConfig, OpenAIClient};
-use conversation::Conversation;
-use tools::ToolManager;
+use crate::ai::assistant::Assistant;
+use crate::ai::providers::ChatMessage as ProviderChatMessage;
+use crate::ai::context::AIContext; // Import AIContext
 use anyhow::{Result, anyhow};
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use crate::workflows::Workflow; // Import Workflow
 use log::{info, warn, error};
 
 pub mod ai_client;
 pub mod conversation;
 pub mod tools;
 
-use crate::ai::assistant::Assistant;
-use crate::ai::providers::ChatMessage as ProviderChatMessage;
-use crate::block::{Block, BlockContent};
-use crate::agent_mode_eval::tools::{ToolCall as AgentToolCall, ToolResult};
-
-pub use conversation::{Conversation, Message, MessageRole};
-pub use tools::{Tool, ToolCall, ToolResult};
+// Re-export necessary types from sub-modules
+pub use conversation::Conversation;
+pub use tools::{Tool, ToolCall, ToolResult}; // ToolCall here is the one used by AgentMode
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentMessage {
     UserMessage(String),
     AgentResponse(String),
-    ToolCall(ToolCall),
+    ToolCall(ToolCall), // Use the ToolCall from tools.rs
     ToolResult(String),
     SystemMessage(String),
     Done,
@@ -47,21 +39,33 @@ pub enum AgentMessage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCall {
-    pub name: String,
-    pub arguments: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
+    pub provider_type: String,
     pub api_key: Option<String>,
-    // Add other agent-specific configuration options here
+    pub model: String,
+    pub enable_tool_use: bool,
+    pub max_conversation_history: usize,
+    pub redact_sensitive_info: bool,
+    pub local_only_ai_mode: bool,
+    pub fallback_provider_type: Option<String>,
+    pub fallback_api_key: Option<String>,
+    pub fallback_model: Option<String>,
 }
 
 impl Default for AgentConfig {
     fn default() -> Self {
+        // Default values, but these should ideally be loaded from UserPreferences
         Self {
+            provider_type: "openai".to_string(),
             api_key: None,
+            model: "gpt-4o".to_string(),
+            enable_tool_use: true,
+            max_conversation_history: 20,
+            redact_sensitive_info: true,
+            local_only_ai_mode: false,
+            fallback_provider_type: Some("ollama".to_string()),
+            fallback_api_key: None,
+            fallback_model: Some("llama2".to_string()),
         }
     }
 }
@@ -70,18 +74,20 @@ pub struct AgentMode {
     config: AgentConfig,
     enabled: bool,
     ai_assistant: Arc<RwLock<Assistant>>,
+    ai_context: Arc<AIContext>, // Added AIContext
     message_sender: mpsc::Sender<AgentMessage>,
     message_receiver: mpsc::Receiver<AgentMessage>,
     active_workflow_prompt_tx: HashMap<String, mpsc::Sender<String>>, // prompt_id -> sender for user response
 }
 
 impl AgentMode {
-    pub fn new(config: AgentConfig, ai_assistant: Arc<RwLock<Assistant>>) -> Result<Self> {
+    pub fn new(config: AgentConfig, ai_assistant: Arc<RwLock<Assistant>>, ai_context: Arc<AIContext>) -> Result<Self> {
         let (tx, rx) = mpsc::channel(100); // Channel for agent messages to UI
         Ok(Self {
             config,
             enabled: false,
             ai_assistant,
+            ai_context, // Initialize AIContext
             message_sender: tx,
             message_receiver: rx,
             active_workflow_prompt_tx: HashMap::new(),
@@ -95,7 +101,10 @@ impl AgentMode {
 
     pub async fn start_conversation(&mut self) -> Result<()> {
         info!("Starting new agent conversation.");
-        // Initialize conversation state, load initial context, etc.
+        let mut assistant_lock = self.ai_assistant.write().await;
+        assistant_lock.clear_history();
+        // Optionally send an initial system message or greeting
+        let _ = self.message_sender.send(AgentMessage::SystemMessage("Agent mode activated. How can I help you?".to_string())).await;
         Ok(())
     }
 
@@ -103,14 +112,15 @@ impl AgentMode {
         let sender_clone = self.message_sender.clone();
         let ai_assistant_clone = self.ai_assistant.clone(); // Clone the Arc for the spawned task
 
-        // Add user message to history
-        let mut ai_assistant = ai_assistant_clone.write().await;
-        ai_assistant.conversation_history.push(crate::ai::providers::ChatMessage {
+        // Add user message to assistant's history
+        let mut ai_assistant_write_guard = ai_assistant_clone.write().await;
+        ai_assistant_write_guard.conversation_history.push(ProviderChatMessage {
             role: "user".to_string(),
             content: Some(prompt.clone()),
             tool_calls: None,
             tool_call_id: None,
         });
+        drop(ai_assistant_write_guard); // Drop the write guard before spawning the task
 
         tokio::spawn(async move {
             let mut ai_assistant = ai_assistant_clone.write().await; // Get write lock inside the task
@@ -154,8 +164,8 @@ impl AgentMode {
                                     if let Some(tool_calls) = msg.tool_calls {
                                         for tool_call in tool_calls {
                                             let agent_tool_call = ToolCall {
-                                                name: tool_call.function.name,
-                                                arguments: tool_call.function.arguments,
+                                                name: tool_call.name,
+                                                arguments: tool_call.arguments,
                                             };
                                             if sender_clone.send(AgentMessage::ToolCall(agent_tool_call)).await.is_err() {
                                                 warn!("Agent message receiver dropped during tool call.");
@@ -169,7 +179,7 @@ impl AgentMode {
                             }
                         }
                         // Add the full response to the assistant's history
-                        ai_assistant.conversation_history.push(crate::ai::providers::ChatMessage {
+                        ai_assistant.conversation_history.push(ProviderChatMessage {
                             role: "assistant".to_string(),
                             content: Some(full_response_content),
                             tool_calls: None,

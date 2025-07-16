@@ -1,6 +1,6 @@
 use crate::ai::providers::{AIProvider, ChatMessage, OpenAIProvider, OllamaProvider, AnthropicProvider};
 use crate::ai::prompts::PromptBuilder;
-use crate::ai::context::AIContext;
+use crate::ai::context::AIContext; // Import AIContext
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
@@ -13,6 +13,8 @@ use crate::virtual_fs::VirtualFileSystem;
 use crate::watcher::Watcher;
 use crate::config::preferences::AiPreferences;
 use crate::plugins::plugin_manager::PluginManager;
+use serde::{Deserialize, Serialize}; // Added for ChatMessage and ToolCall derives
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -40,10 +42,11 @@ pub struct Assistant {
     watcher: Arc<Watcher>,
     ai_provider: Box<dyn AIProvider + Send + Sync>,
     fallback_ai_provider: Option<Box<dyn AIProvider + Send + Sync>>,
-    history: Vec<ChatMessage>,
+    pub conversation_history: Vec<ChatMessage>, // Made public for AgentMode to manage
     redact_sensitive_info: bool,
     local_only_ai_mode: bool,
     tool_manager: Arc<Mutex<ToolManager>>,
+    ai_context: Arc<AIContext>, // Added AIContext
 }
 
 impl Assistant {
@@ -59,6 +62,7 @@ impl Assistant {
         fallback_ai_model: Option<String>,
         redact_sensitive_info: bool,
         local_only_ai_mode: bool,
+        ai_context: Arc<AIContext>, // Accept AIContext here
     ) -> Result<Self> {
         let ai_provider: Box<dyn AIProvider + Send + Sync> = match ai_provider_type {
             "openai" => Box::new(OpenAIProvider::new(ai_api_key, ai_model)?),
@@ -86,10 +90,11 @@ impl Assistant {
             watcher,
             ai_provider,
             fallback_ai_provider,
-            history: Vec::new(),
+            conversation_history: Vec::new(), // Renamed from `history`
             redact_sensitive_info,
             local_only_ai_mode,
             tool_manager: Arc::new(Mutex::new(ToolManager::new())),
+            ai_context, // Initialize AIContext
         })
     }
 
@@ -97,17 +102,13 @@ impl Assistant {
         let (tx, rx) = mpsc::channel(100);
 
         let system_prompt = PromptBuilder::new().build_general_chat_prompt();
-        let context = AIContext::new(
-            self.command_manager.clone(),
-            self.virtual_file_system.clone(),
-            self.watcher.clone(),
-            self.redact_sensitive_info,
-        ).get_context().await?;
+        let context = self.ai_context.get_full_context().await; // Use the injected AIContext
 
-        let messages = vec![
+        let mut messages = vec![
             ChatMessage { role: "system".to_string(), content: Some(system_prompt), tool_calls: None },
-            ChatMessage { role: "user".to_string(), content: Some(format!("{}\n{}", prompt, context)), tool_calls: None },
         ];
+        messages.extend(self.conversation_history.iter().cloned()); // Add conversation history
+        messages.push(ChatMessage { role: "user".to_string(), content: Some(format!("{}\n\nContext:\n{}", prompt, context)), tool_calls: None });
 
         let mut stream = self.ai_provider.stream_chat(messages).await?;
 
@@ -126,12 +127,7 @@ impl Assistant {
         let (tx, rx) = mpsc::channel(100);
 
         let system_prompt = PromptBuilder::new().build_general_chat_prompt();
-        let context = AIContext::new(
-            self.command_manager.clone(),
-            self.virtual_file_system.clone(),
-            self.watcher.clone(),
-            self.redact_sensitive_info,
-        ).get_context().await?;
+        let context = self.ai_context.get_full_context().await; // Use the injected AIContext
 
         let mut messages = vec![
             ChatMessage { role: "system".to_string(), content: Some(system_prompt), tool_calls: None },
@@ -162,7 +158,8 @@ impl Assistant {
             messages.push(ChatMessage { role: "system".to_string(), content: Some(block_content), tool_calls: None });
         }
 
-        messages.push(ChatMessage { role: "user".to_string(), content: Some(format!("{}\n{}", prompt, context)), tool_calls: None });
+        messages.extend(self.conversation_history.iter().cloned()); // Add conversation history
+        messages.push(ChatMessage { role: "user".to_string(), content: Some(format!("{}\n\nContext:\n{}", prompt, context)), tool_calls: None });
 
         let ai_provider = if self.local_only_ai_mode {
             self.fallback_ai_provider.as_ref().ok_or(anyhow!("Local-only mode enabled, but no local AI provider configured."))?
@@ -179,8 +176,14 @@ impl Assistant {
                     "assistant" => AgentMessage::AgentResponse(chunk.content.unwrap_or_default()),
                     "tool_calls" => {
                         if let Some(tool_calls) = chunk.tool_calls {
+                            // Assuming ToolCall in assistant.rs is the same as AgentToolCall in agent_mode_eval
                             for tool_call in tool_calls {
-                                AgentMessage::ToolCall(ToolCall { name: tool_call.name, arguments: tool_call.arguments })
+                                // This will only send the last tool call if there are multiple in one chunk
+                                // A more robust solution would be to send a vector of tool calls or iterate and send
+                                return if tx.send(AgentMessage::ToolCall(ToolCall { name: tool_call.name, arguments: tool_call.arguments })).await.is_err() {
+                                    error!("Failed to send tool call message.");
+                                    return;
+                                };
                             }
                             continue;
                         } else {
@@ -203,9 +206,10 @@ impl Assistant {
 
     pub async fn generate_command(&mut self, natural_language_query: &str) -> Result<String> {
         let system_prompt = PromptBuilder::new().build_command_generation_prompt();
+        let context = self.ai_context.get_full_context().await; // Use the injected AIContext
         let messages = vec![
             ChatMessage { role: "system".to_string(), content: Some(system_prompt), tool_calls: None },
-            ChatMessage { role: "user".to_string(), content: Some(natural_language_query.to_string()), tool_calls: None },
+            ChatMessage { role: "user".to_string(), content: Some(format!("{}\n\nContext:\n{}", natural_language_query, context)), tool_calls: None },
         ];
 
         let ai_provider = if self.local_only_ai_mode {
@@ -220,9 +224,10 @@ impl Assistant {
 
     pub async fn fix(&mut self, original_command: &str, error_message: &str) -> Result<String> {
         let system_prompt = PromptBuilder::new().build_fix_suggestion_prompt();
+        let context = self.ai_context.get_full_context().await; // Use the injected AIContext
         let messages = vec![
             ChatMessage { role: "system".to_string(), content: Some(system_prompt), tool_calls: None },
-            ChatMessage { role: "user".to_string(), content: Some(format!("Original command: {}\nError: {}", original_command, error_message)), tool_calls: None },
+            ChatMessage { role: "user".to_string(), content: Some(format!("Original command: {}\nError: {}\n\nContext:\n{}", original_command, error_message, context)), tool_calls: None },
         ];
 
         let ai_provider = if self.local_only_ai_mode {
@@ -237,10 +242,12 @@ impl Assistant {
 
     pub async fn explain_output(&mut self, command_input: &str, output_content: &str, error_message: Option<&str>) -> Result<String> {
         let system_prompt = PromptBuilder::new().build_explanation_prompt();
+        let context = self.ai_context.get_full_context().await; // Use the injected AIContext
         let mut user_prompt = format!("Command: `{}`\nOutput:\n\`\`\`\n{}\n\`\`\`", command_input, output_content);
         if let Some(err) = error_message {
             user_prompt.push_str(&format!("\nError: {}", err));
         }
+        user_prompt.push_str(&format!("\n\nContext:\n{}", context)); // Append context
 
         let messages = vec![
             ChatMessage { role: "system".to_string(), content: Some(system_prompt), tool_calls: None },
@@ -257,12 +264,33 @@ impl Assistant {
         Ok(response)
     }
 
+    // New method to infer workflow from natural language
+    pub async fn infer_workflow(&mut self, natural_language_query: &str) -> Result<Workflow> {
+        let system_prompt = PromptBuilder::new().build_workflow_inference_prompt();
+        let context = self.ai_context.get_full_context().await; // Use the injected AIContext
+        let messages = vec![
+            ChatMessage { role: "system".to_string(), content: Some(system_prompt), tool_calls: None },
+            ChatMessage { role: "user".to_string(), content: Some(format!("{}\n\nContext:\n{}", natural_language_query, context)), tool_calls: None },
+        ];
+
+        let ai_provider = if self.local_only_ai_mode {
+            self.fallback_ai_provider.as_ref().ok_or(anyhow!("Local-only mode enabled, but no local AI provider configured."))?
+        } else {
+            &self.ai_provider
+        };
+
+        let response_json_str = ai_provider.chat(messages).await?;
+        // Attempt to parse the response as a Workflow struct
+        serde_json::from_str(&response_json_str)
+            .map_err(|e| anyhow!("Failed to parse workflow from AI response: {}. Response: {}", e, response_json_str))
+    }
+
     pub fn clear_history(&mut self) {
-        self.history.clear();
+        self.conversation_history.clear();
     }
 
     pub fn get_history(&self) -> Vec<ChatMessage> {
-        self.history.clone()
+        self.conversation_history.clone()
     }
 
     pub async fn get_usage_quota(&self) -> Result<String> {
@@ -307,4 +335,20 @@ impl ToolManager {
 
 pub fn init() {
     log::info!("ai/assistant module loaded");
+}
+
+// Placeholder for Block and BlockContent types
+#[derive(Debug)]
+pub enum BlockContent {
+    Command { input: String, output: Vec<(String, String)>, status: String, error: String },
+    AgentMessage { content: String, is_user: bool },
+    Info { title: String, message: String },
+    Error { message: String },
+    WorkflowSuggestion { workflow: Workflow },
+    AgentPrompt { message: String },
+}
+
+#[derive(Debug)]
+pub struct Block {
+    pub content: BlockContent,
 }

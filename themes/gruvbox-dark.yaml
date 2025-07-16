@@ -1,13 +1,32 @@
 name: "Gruvbox Dark"
-author: "Pavel Pertsev"
-description: "Retro groove color scheme"
-accent: "#fe8019"
+author: "NeoTerm"
+description: "A dark theme inspired by the Gruvbox color scheme."
+accent: "#d79921"
 background: "#282828"
 details: "darker"
 foreground: "#ebdbb2"
 cursor: "#ebdbb2"
 selection: "#665c54"
-border: "#665c54"
+border: "#504945"
+
+colors:
+  primary: "#fe8019"
+  secondary: "#83a598"
+  success: "#b8bb26"
+  warning: "#fabd2f"
+  error: "#fb4934"
+  info: "#83a598"
+  surface: "#3c3836"
+  surface_variant: "#504945"
+  outline: "#665c54"
+  danger: "#cc241d"
+  text_color: "#ebdbb2"
+  border_color: "#504945"
+  selection_color: "#665c54"
+  error_color: "#fb4934"
+  warning_color: "#fabd2f"
+  info_color: "#83a598"
+  success_color: "#b8bb26"
 
 terminal_colors:
   normal:
@@ -30,7 +49,7 @@ terminal_colors:
     white: "#ebdbb2"
 
 ui_colors:
-  primary: "#458588"
+  primary: "#fe8019"
   secondary: "#83a598"
   success: "#b8bb26"
   warning: "#fabd2f"

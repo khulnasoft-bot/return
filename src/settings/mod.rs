@@ -152,19 +152,19 @@ impl SettingsView {
         let header = text("Application Settings").size(30).color(Color::BLACK);
 
         let sidebar = column![
-            button(text("General")).padding(10),
-            button(text("Appearance")).on_press(SettingsMessage::AppearanceSettings(appearance_settings::AppearanceSettingsMessage::SyncWithOsThemeToggled(false))).padding(10), // Dummy message to show section
-            button(text("Terminal")).padding(10),
-            button(text("Editor")).padding(10),
-            button(text("Keybindings")).on_press(SettingsMessage::KeybindingEditor(keybinding_editor::KeybindingEditorMessage::Save)).padding(10), // Dummy message to show section
-            button(text("Themes")).on_press(SettingsMessage::ThemeEditor(theme_editor::ThemeEditorMessage::LoadThemes)).padding(10), // Dummy message to show section
-            button(text("AI")).padding(10),
-            button(text("Plugins")).padding(10),
-            button(text("Workflows")).padding(10),
-            button(text("Cloud Sync")).padding(10),
-            button(text("Collaboration")).padding(10),
-            button(text("Privacy")).padding(10),
-            button(text("Performance")).padding(10),
+            self.nav_button(SettingsTab::General, "General"),
+            self.nav_button(SettingsTab::Appearance, "Appearance"),
+            self.nav_button(SettingsTab::Terminal, "Terminal"),
+            self.nav_button(SettingsTab::Editor, "Editor"),
+            self.nav_button(SettingsTab::KeyBindings, "Keybindings"),
+            self.nav_button(SettingsTab::Themes, "Themes"),
+            self.nav_button(SettingsTab::AI, "AI"),
+            self.nav_button(SettingsTab::Plugins, "Plugins"),
+            self.nav_button(SettingsTab::Workflows, "Workflows"),
+            self.nav_button(SettingsTab::CloudSync, "Cloud Sync"),
+            self.nav_button(SettingsTab::Collaboration, "Collaboration"),
+            self.nav_button(SettingsTab::Privacy, "Privacy"),
+            self.nav_button(SettingsTab::Performance, "Performance"),
         ]
         .spacing(5)
         .width(Length::Fixed(180.0));

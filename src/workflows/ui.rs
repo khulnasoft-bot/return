@@ -1,6 +1,10 @@
 use iced::{Element, widget::{column, row, text, button, text_input, scrollable, container}, Length};
 use crate::workflows::{Workflow, WorkflowStep};
 use crate::Message;
+use std::collections::HashMap;
+use ratatui::{backend::Backend, layout::Rect, widgets::{Block, Borders, Paragraph, Span, Style}, Frame};
+use ratatui::text::Line;
+use ratatui::style::Color;
 
 /// Represents the UI for managing workflows.
 #[derive(Debug, Clone)]
@@ -98,7 +102,7 @@ impl WorkflowUI {
                 self.update_search_results();
             }
             WorkflowMessage::WorkflowSelected(name) => {
-                self.selected_workflow = self.workflows.iter().find(|wf| wf.name == name).cloned();
+                self.selected_workflow = self.manager.workflows.iter().find(|wf| wf.name == name).cloned();
                 self.argument_values.clear();
                 
                 // Initialize argument values with defaults
@@ -115,9 +119,25 @@ impl WorkflowUI {
             }
             WorkflowMessage::ExecuteWorkflow => {
                 // Handle workflow execution
+                if let Some(workflow) = &self.selected_workflow {
+                    let request = WorkflowExecutionRequest {
+                        workflow: workflow.clone(),
+                        arguments: self.argument_values.clone(),
+                        dry_run: false,
+                    };
+                    // Execute the workflow
+                }
             }
             WorkflowMessage::DryRunWorkflow => {
                 // Handle dry run workflow
+                if let Some(workflow) = &self.selected_workflow {
+                    let request = WorkflowExecutionRequest {
+                        workflow: workflow.clone(),
+                        arguments: self.argument_values.clone(),
+                        dry_run: true,
+                    };
+                    // Dry run the workflow
+                }
             }
             WorkflowMessage::ShowWorkflowDetails(show) => {
                 self.show_workflow_details = show;
@@ -135,18 +155,18 @@ impl WorkflowUI {
                 if !self.new_workflow_name.is_empty() {
                     let new_workflow = Workflow {
                         name: self.new_workflow_name.clone(),
-                        description: "New workflow".to_string(),
+                        description: Some("New workflow".to_string()),
                         steps: Vec::new(),
                         environment: HashMap::new(),
                         timeout: None,
                     };
-                    self.workflows.push(new_workflow.clone());
+                    self.manager.workflows.push(new_workflow.clone());
                     self.selected_workflow = Some(new_workflow);
                     self.new_workflow_name.clear();
                 }
             }
             WorkflowMessage::DeleteWorkflow(name) => {
-                self.workflows.retain(|wf| wf.name != name);
+                self.manager.workflows.retain(|wf| wf.name != name);
                 self.selected_workflow = None;
             }
             WorkflowMessage::StepCommandChanged(command) => {
@@ -589,4 +609,97 @@ impl WorkflowEditor {
 
         frame.render_widget(paragraph, area);
     }
+}
+
+fn pick_list<'a, T: Clone>(options: Vec<T>, selected: Option<T>, on_change: impl Fn(T) -> WorkflowMessage + 'a) -> iced::widget::PickList<'a, T, WorkflowMessage> {
+    iced::widget::PickList::new(options, selected, on_change)
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkflowManager {
+    pub workflows: Vec<Workflow>,
+}
+
+impl WorkflowManager {
+    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self {
+            workflows: Vec::new(),
+        })
+    }
+
+    pub fn load_workflows(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        // Load workflows from a source
+        Ok(())
+    }
+
+    pub fn get_all_workflows(&self, shell: Option<&Shell>) -> Vec<WorkflowSearchResult> {
+        self.workflows.iter()
+            .filter(|workflow| shell.map_or(true, |s| workflow.shells.as_ref().map_or(true, |shells| shells.contains(s))))
+            .map(|workflow| WorkflowSearchResult {
+                workflow: workflow.clone(),
+                score: 0.0,
+                matched_fields: vec![],
+            })
+            .collect()
+    }
+
+    pub fn get_workflows_by_category(&self, category: &WorkflowCategory, shell: Option<&Shell>) -> Vec<Workflow> {
+        self.workflows.iter()
+            .filter(|workflow| workflow.tags.contains(&category.to_string()) && shell.map_or(true, |s| workflow.shells.as_ref().map_or(true, |shells| shells.contains(s))))
+            .cloned()
+            .collect()
+    }
+
+    pub fn search_workflows(&self, query: &str, shell: Option<&Shell>) -> Vec<WorkflowSearchResult> {
+        self.workflows.iter()
+            .filter(|workflow| workflow.name.contains(query) && shell.map_or(true, |s| workflow.shells.as_ref().map_or(true, |shells| shells.contains(s))))
+            .map(|workflow| WorkflowSearchResult {
+                workflow: workflow.clone(),
+                score: 0.0,
+                matched_fields: vec![],
+            })
+            .collect()
+    }
+
+    pub fn get_categories(&self) -> Vec<WorkflowCategory> {
+        // Return a list of categories
+        vec![]
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkflowSearchResult {
+    pub workflow: Workflow,
+    pub score: f64,
+    pub matched_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum WorkflowCategory {
+    // Define workflow categories
+}
+
+#[derive(Debug, Clone)]
+pub enum Shell {
+    Bash,
+    Zsh,
+    Fish,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkflowArgument {
+    pub name: String,
+    pub arg_type: ArgumentType,
+    pub default_value: Option<String>,
+    pub options: Option<Vec<String>>,
+    pub description: Option<String>,
+    pub required: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum ArgumentType {
+    // Define argument types
+    Boolean,
+    Enum,
+    // Other types
 }

@@ -15,6 +15,7 @@ pub enum LuaPluginEvent {
     Executed { name: String, result: String },
     Error { name: String, error: String },
     // Add events for API calls from Lua to Rust
+    RustAPICalled { function_name: String, args: String, result: String },
 }
 
 impl LuaEngine {
@@ -51,6 +52,23 @@ impl LuaEngine {
             }
         })?)?;
         globals.set("fs", fs_table)?;
+
+        // Example: Expose a `rust` table with a `call_rust_function` function
+        let rust_table = self.lua.create_table()?;
+        rust_table.set("call_rust_function", self.lua.create_async_function(|lua, (function_name, args): (String, String)| async move {
+            let sender_clone = self.event_sender.clone();
+            let result = match function_name.as_str() {
+                "example_function" => {
+                    let result = format!("Rust says: {}", args);
+                    log::info!("Called Rust function '{}' with args: '{}'. Result: {}", function_name, args, result);
+                    let _ = sender_clone.send(LuaPluginEvent::RustAPICalled { function_name, args, result }).await;
+                    result
+                },
+                _ => format!("Function '{}' not found.", function_name),
+            };
+            Ok(result)
+        })?)?;
+        globals.set("rust", rust_table)?;
 
         log::info!("Rust API exposed to Lua.");
         Ok(())
