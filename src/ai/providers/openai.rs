@@ -8,7 +8,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use log::info;
+use log::{info, warn, error};
 
 #[derive(Debug, Clone)]
 pub struct OpenAIProvider {
@@ -140,7 +140,7 @@ impl AIProvider for OpenAIProvider {
                                                             tool_calls: None,
                                                             tool_call_id: None,
                                                         }).await.is_err() {
-                                                            log::warn!("Receiver dropped, stopping OpenAI stream.");
+                                                            warn!("Receiver dropped, stopping OpenAI stream.");
                                                             return;
                                                         }
                                                     }
@@ -174,20 +174,20 @@ impl AIProvider for OpenAIProvider {
                                                                 tool_calls: Some(vec![entry.clone()]), // Send current state of tool call
                                                                 tool_call_id: None,
                                                             }).await.is_err() {
-                                                                log::warn!("Receiver dropped, stopping OpenAI stream.");
+                                                                warn!("Receiver dropped, stopping OpenAI stream.");
                                                                 return;
                                                             }
                                                         }
                                                     }
                                                 }
                                             },
-                                            Err(e) => log::error!("Failed to parse OpenAI stream event: {:?} - {}", data, e),
+                                            Err(e) => error!("Failed to parse OpenAI stream event: {:?} - {}", data, e),
                                         }
                                     }
                                 }
                             },
                             Err(e) => {
-                                log::error!("Error receiving chunk from OpenAI stream: {:?}", e);
+                                error!("Error receiving chunk from OpenAI stream: {:?}", e);
                                 let _ = tx.send(ChatMessage {
                                     role: "error".to_string(),
                                     content: Some(format!("Stream error: {}", e)),
@@ -200,7 +200,7 @@ impl AIProvider for OpenAIProvider {
                     }
                 },
                 Err(e) => {
-                    log::error!("Failed to send request to OpenAI: {:?}", e);
+                    error!("Failed to send request to OpenAI: {:?}", e);
                     let _ = tx.send(ChatMessage {
                         role: "error".to_string(),
                         content: Some(format!("Request error: {}", e)),

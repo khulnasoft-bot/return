@@ -1079,7 +1079,7 @@ impl NeoTerm {
         } else {
             Command::perform(
                 async move {
-                    let mut agent_mode = agent_mode_arc_clone.write().await;
+                    let agent_mode = agent_mode_arc_clone.read().await; // Read lock for initial call
                     match agent_mode.send_message(prompt_content, context_blocks).await {
                         Ok(mut stream_rx) => {
                             while let Some(msg) = stream_rx.recv().await {
@@ -1180,7 +1180,7 @@ impl NeoTerm {
                     // Send the generic prompt and the specific block as context
                     return Command::perform(
                         async move {
-                            let mut agent_mode = agent_mode_arc_clone.write().await;
+                            let agent_mode = agent_mode_arc_clone.read().await;
                             match agent_mode.send_message(user_prompt_for_ai.to_string(), vec![block_to_send]).await {
                                 Ok(mut stream_rx) => {
                                     while let Some(msg) = stream_rx.recv().await {
