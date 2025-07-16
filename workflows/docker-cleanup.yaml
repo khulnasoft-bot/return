@@ -1,0 +1,59 @@
+id: docker-cleanup
+name: "Docker Cleanup"
+description: "Removes unused Docker images and containers."
+command: |
+  echo "Cleaning up Docker resources..."
+  docker container prune -f
+  docker image prune -f
+  {{#if networks}}docker network prune -f{{/if}}
+  echo "Docker cleanup completed!"
+tags: ["docker", "cleanup", "maintenance"]
+author: "DevOps Team"
+shells: ["bash", "zsh"]
+arguments:
+  - name: networks
+    description: "Also clean up unused networks"
+    default_value: "false"
+    arg_type: boolean
+    required: false
+steps:
+  - id: remove-exited-containers
+    name: "Remove Exited Containers"
+    command: docker
+    args: ["rm", "-v", "$(docker ps -a -q -f status=exited)"]
+    environment: {}
+    timeout: 30
+    retry_count: 0
+    condition: ""
+  - id: remove-dangling-images
+    name: "Remove Dangling Images"
+    command: docker
+    args: ["rmi", "$(docker images -f dangling=true -q)"]
+    environment: {}
+    timeout: 30
+    retry_count: 0
+    condition: ""
+  - id: remove-build-cache
+    name: "Remove Docker Build Cache"
+    command: docker
+    args: ["builder", "prune", "-a", "-f"]
+    environment: {}
+    timeout: 60
+    retry_count: 0
+    condition: ""
+  - id: prune-docker-system
+    name: "Prune Docker System"
+    command: docker
+    args: ["system", "prune", "-f"]
+    environment: {}
+    timeout: 60
+    retry_count: 0
+    condition: ""
+  - id: prune-docker-volumes
+    name: "Prune Docker Volumes"
+    command: docker
+    args: ["volume", "prune", "-f"]
+    environment: {}
+    timeout: 60
+    retry_count: 0
+    condition: ""

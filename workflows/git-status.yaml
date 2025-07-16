@@ -1,0 +1,12 @@
+id: git-status
+name: Git Status
+description: Shows the status of a Git repository.
+steps:
+  - id: git-status-check
+    name: Check Git Status
+    command: git
+    args: ["status"]
+    environment: {}
+    timeout: 30
+    retry_count: 0
+    condition: ""
