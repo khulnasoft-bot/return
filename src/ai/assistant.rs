@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::Mutex; // Use tokio's Mutex
 use tokio::sync::mpsc;
-use serde_json::Value;
+use serde_json::{json, Value};
 use crate::workflows::Workflow;
 use regex::Regex;
 use crate::command::CommandManager;
