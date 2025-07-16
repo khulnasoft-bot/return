@@ -115,6 +115,23 @@ impl PtySession {
     }
 }
 
+impl Drop for PtySession {
+    /// Attempts to kill the child process when the PtySession is dropped.
+    /// This is a best-effort attempt as `drop` cannot be async.
+    fn drop(&mut self) {
+        info!("Dropping PtySession for child process.");
+        let child_clone = self._child.clone();
+        tokio::task::block_in_place(move || {
+            let mut child = child_clone.lock().unwrap();
+            if let Err(e) = child.kill() {
+                error!("Failed to kill child process during PtySession drop: {}", e);
+            } else {
+                info!("Child process killed during PtySession drop.");
+            }
+        });
+    }
+}
+
 pub fn init() {
     info!("command/pty module loaded");
 }

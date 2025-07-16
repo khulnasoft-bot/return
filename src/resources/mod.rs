@@ -56,6 +56,10 @@ impl ResourceManager {
         if !icon_path.exists() {
             // Simulate creating a dummy file
             fs::write(&icon_path, b"// Dummy PNG content").await?;
+            // Validate that the file was actually created
+            if !icon_path.exists() {
+                return Err(anyhow::anyhow!("Failed to create default icon file at {:?}", icon_path));
+            }
         }
         resources.insert("default_icon".to_string(), Resource {
             id: "default_icon".to_string(),
@@ -76,6 +80,9 @@ impl ResourceManager {
     /// Loads the content of a resource as bytes.
     pub async fn load_resource_bytes(&self, id: &str) -> Result<Vec<u8>> {
         if let Some(resource) = self.resources.get(id) {
+            if !resource.path.exists() {
+                return Err(anyhow::anyhow!("Resource file '{}' not found at path: {:?}", id, resource.path));
+            }
             Ok(fs::read(&resource.path).await?)
         } else {
             Err(anyhow::anyhow!("Resource '{}' not found.", id))
@@ -85,6 +92,9 @@ impl ResourceManager {
     /// Loads the content of a resource as a string (for text-based resources).
     pub async fn load_resource_string(&self, id: &str) -> Result<String> {
         if let Some(resource) = self.resources.get(id) {
+            if !resource.path.exists() {
+                return Err(anyhow::anyhow!("Resource file '{}' not found at path: {:?}", id, resource.path));
+            }
             Ok(fs::read_to_string(&resource.path).await?)
         } else {
             Err(anyhow::anyhow!("Resource '{}' not found.", id))
