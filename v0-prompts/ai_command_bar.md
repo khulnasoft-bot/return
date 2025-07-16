@@ -1,7 +1,7 @@
-# AI Command Bar Component – Rust Project Prompt (Iced/Dioxus)
+# AI Command Bar Component – Rust Project Prompt (Iced)
 
 🧠 Context:
-You are building a Rust-native terminal interface (like Warp), and you want to implement an AI-enhanced command input bar. The app uses the Iced or Dioxus UI library for rendering, and integrates with an OpenAI API or local LLM server for intelligent completions.
+You are building a Rust-native terminal interface (like Warp), and you want to implement an AI-enhanced command input bar. The app uses the Iced UI library for rendering, and integrates with an OpenAI API or local LLM server for intelligent completions.
 
 ---
 
@@ -27,7 +27,7 @@ Design and implement a **fully functional AI Command Bar** that:
 ---
 
 🔧 Technical Constraints:
-- Built using `Iced` (preferred) or `Dioxus` with Rust
+- Built using `Iced` (preferred) with Rust
 - All UI should be declarative, idiomatic Rust
 - Use async API calls with `reqwest` or `ureq`
 - Error handling must be graceful with visible messages
