@@ -1,3 +1,7 @@
+//! This module handles user input, including text input, command history,
+//! and intelligent suggestions for commands and files.
+//! It provides an `EnhancedTextInput` widget for the Iced GUI.
+
 use iced::{Element, widget::{text_input, column, row, container, button, text}};
 use iced::keyboard::{self, KeyCode, Modifiers};
 use iced::{keyboard::Event as KeyEvent, Event as IcedEvent};
@@ -5,6 +9,7 @@ use std::collections::{VecDeque, HashMap};
 use anyhow::Result;
 use log::info;
 
+/// Represents the state and logic for an enhanced text input field.
 #[derive(Debug, Clone)]
 pub struct EnhancedTextInput {
     value: String,
@@ -15,6 +20,7 @@ pub struct EnhancedTextInput {
     live_preview: String,
 }
 
+/// Represents a single suggestion for the input field.
 #[derive(Debug, Clone)]
 pub struct Suggestion {
     pub text: String,
@@ -23,6 +29,7 @@ pub struct Suggestion {
     pub score: f32,
 }
 
+/// Defines the type of a suggestion.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SuggestionType {
     Command,
@@ -33,18 +40,21 @@ pub enum SuggestionType {
     Alias,
 }
 
+/// Direction for navigating suggestions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     Up,
     Down,
 }
 
+/// Direction for navigating command history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryDirection {
     Up,
     Down,
 }
 
+/// Messages that can be sent to the `EnhancedTextInput` for updates.
 #[derive(Debug, Clone)]
 pub enum Message {
     InputChanged(String),
@@ -53,10 +63,10 @@ pub enum Message {
     NavigateSuggestions(Direction),
     ApplySuggestion,
     HistoryNavigated(HistoryDirection),
-    // Removed TUI-specific input messages
 }
 
 impl EnhancedTextInput {
+    /// Creates a new `EnhancedTextInput` instance.
     pub fn new() -> Self {
         Self {
             value: String::new(),
@@ -68,6 +78,11 @@ impl EnhancedTextInput {
         }
     }
 
+    /// Updates the state of the `EnhancedTextInput` based on incoming messages.
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - The `Message` to process.
     pub fn update(&mut self, message: Message) {
         match message {
             Message::InputChanged(value) => {
@@ -130,10 +145,19 @@ impl EnhancedTextInput {
         }
     }
 
+    /// Returns the current value of the text input.
     pub fn value(&self) -> &str {
         &self.value
     }
 
+    /// Adds a command to the history.
+    ///
+    /// Commands are added to the front of the history and duplicates are avoided.
+    /// The history is capped at 1000 entries.
+    ///
+    /// # Arguments
+    ///
+    /// * `command` - The command string to add to history.
     pub fn add_to_history(&mut self, command: String) {
         if !command.trim().is_empty() && self.history.front() != Some(&command) {
             self.history.push_front(command);
@@ -144,6 +168,15 @@ impl EnhancedTextInput {
         self.history_index = None;
     }
 
+    /// Navigates through the command history.
+    ///
+    /// # Arguments
+    ///
+    /// * `direction` - The direction to navigate (`Up` for older, `Down` for newer).
+    ///
+    /// # Returns
+    ///
+    /// An `Option<String>` containing the command from history, or `None` if navigation is not possible.
     fn navigate_history(&mut self, direction: HistoryDirection) -> Option<String> {
         match direction {
             HistoryDirection::Up => {
@@ -176,6 +209,9 @@ impl EnhancedTextInput {
         }
     }
 
+    /// Updates the list of suggestions based on the current input value.
+    ///
+    /// This method generates command and history suggestions and sorts them by relevance.
     fn update_suggestions(&mut self) {
         let mut suggestions = Vec::new();
         let current_input = self.value.trim();
@@ -192,12 +228,14 @@ impl EnhancedTextInput {
             suggestions.extend(self.get_history_suggestions(current_input));
         }
 
+        // Sort suggestions by score in descending order
         suggestions.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-        suggestions.truncate(10);
+        suggestions.truncate(10); // Limit to top 10 suggestions
 
         self.suggestions = suggestions;
     }
 
+    /// Updates the live preview text based on the active suggestion.
     fn update_live_preview(&mut self) {
         self.live_preview = if let Some(index) = self.active_suggestion {
             self.suggestions.get(index).map(|s| s.text.clone()).unwrap_or_default()
@@ -206,6 +244,15 @@ impl EnhancedTextInput {
         };
     }
 
+    /// Generates command suggestions based on a given prefix.
+    ///
+    /// # Arguments
+    ///
+    /// * `prefix` - The input prefix to filter commands by.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<Suggestion>` containing matching command suggestions.
     fn get_command_suggestions(&self, prefix: &str) -> Vec<Suggestion> {
         let common_commands = [
             "ls", "cd", "pwd", "mkdir", "rmdir", "rm", "cp", "mv", "cat", "less", "more",
@@ -227,20 +274,38 @@ impl EnhancedTextInput {
             .collect()
     }
 
+    /// Generates history suggestions based on a given prefix.
+    ///
+    /// # Arguments
+    ///
+    /// * `prefix` - The input prefix to filter history entries by.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<Suggestion>` containing matching history suggestions.
     fn get_history_suggestions(&self, prefix: &str) -> Vec<Suggestion> {
         self.history
             .iter()
             .filter(|cmd| cmd.contains(prefix) && cmd != &self.value)
-            .take(5)
+            .take(5) // Limit history suggestions
             .map(|cmd| Suggestion {
                 text: cmd.clone(),
                 description: Some("From history".to_string()),
                 suggestion_type: SuggestionType::History,
-                score: self.calculate_fuzzy_score(cmd, prefix) * 0.9,
+                score: self.calculate_fuzzy_score(cmd, prefix) * 0.9, // Slightly lower score for history
             })
             .collect()
     }
 
+    /// Provides a brief description for common commands.
+    ///
+    /// # Arguments
+    ///
+    /// * `command` - The command string.
+    ///
+    /// # Returns
+    ///
+    /// A `String` containing the description.
     fn get_command_description(&self, command: &str) -> String {
         match command {
             "ls" => "List directory contents".to_string(),
@@ -257,6 +322,16 @@ impl EnhancedTextInput {
         }
     }
 
+    /// Calculates a fuzzy match score between text and a query.
+    ///
+    /// # Arguments
+    ///
+    /// * `text` - The text to score against.
+    /// * `query` - The query string.
+    ///
+    /// # Returns
+    ///
+    /// A `f32` representing the fuzzy match score. Higher is better.
     fn calculate_fuzzy_score(&self, text: &str, query: &str) -> f32 {
         if query.is_empty() {
             return 0.0;
@@ -276,7 +351,7 @@ impl EnhancedTextInput {
                 if let Some(&query_ch) = query_chars.peek() {
                     if ch == query_ch {
                         score += 0.1;
-                        if i < 5 { score += 0.05; }
+                        if i < 5 { score += 0.05; } // Bonus for early matches
                         query_chars.next();
                     }
                 }
@@ -286,7 +361,18 @@ impl EnhancedTextInput {
         }
     }
 
+    /// Renders the `EnhancedTextInput` widget.
+    ///
+    /// # Arguments
+    ///
+    /// * `prompt_indicator` - The prompt string to display before the input field (e.g., "$ ").
+    /// * `placeholder` - The default placeholder text for the input field.
+    ///
+    /// # Returns
+    ///
+    /// An `Element<Message>` representing the rendered input field and suggestions.
     pub fn view(&self, prompt_indicator: &str, placeholder: &str) -> Element<Message> {
+        // Determine the placeholder text, prioritizing live preview
         let current_placeholder = if !self.live_preview.is_empty() && self.value.is_empty() {
             &self.live_preview
         } else if !self.live_preview.is_empty() && self.live_preview.starts_with(&self.value) {
@@ -296,17 +382,20 @@ impl EnhancedTextInput {
             placeholder
         };
 
+        // Create the main text input widget
         let input = text_input(current_placeholder, &self.value)
             .on_input(Message::InputChanged)
             .on_submit(Message::Submit)
             .padding(12)
             .size(16);
 
+        // Combine prompt indicator and input field
         let input_with_prompt = row![
             text(prompt_indicator).size(16),
             input
         ].spacing(8);
 
+        // Render suggestions if available
         let suggestions_view = if !self.suggestions.is_empty() {
             let suggestion_elements: Vec<Element<Message>> = self.suggestions
                 .iter()
@@ -365,6 +454,7 @@ impl EnhancedTextInput {
     }
 }
 
+/// Initializes the input module.
 pub fn init() {
     info!("input module loaded");
 }

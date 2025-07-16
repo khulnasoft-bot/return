@@ -73,6 +73,11 @@ pub struct CommandManager {
 }
 
 impl CommandManager {
+    /// Creates a new `CommandManager`.
+    ///
+    /// # Arguments
+    ///
+    /// * `event_sender` - An MPSC sender to send `CommandEvent`s for command lifecycle updates.
     pub fn new(event_sender: mpsc::Sender<CommandEvent>) -> Self {
         Self {
             active_ptys: Arc::new(Mutex::new(HashMap::new())),
@@ -83,6 +88,16 @@ impl CommandManager {
     /// Executes a command in a new PTY session.
     /// Returns a unique command ID and the PtySession.
     /// This method is for internal use or when direct PtySession control is needed.
+    ///
+    /// # Arguments
+    ///
+    /// * `command` - The executable command string (e.g., "ls", "bash").
+    /// * `args` - A slice of string arguments for the command.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing a tuple of the command ID and the `PtySession` if successful,
+    /// or an `anyhow::Error` if the command cannot be started.
     pub async fn execute_command(&self, command: &str, args: &[&str]) -> Result<(String, pty::PtySession)> {
         info!("Executing command: {} with args: {:?}", command, args);
         let command_id = uuid::Uuid::new_v4().to_string();
@@ -123,6 +138,16 @@ impl CommandManager {
     }
 
     /// Executes a command and streams its output and status updates via an MPSC channel.
+    /// This is the preferred method for executing commands that need to stream output to the UI.
+    ///
+    /// # Arguments
+    ///
+    /// * `cmd` - The `Command` struct containing details about the command to execute.
+    /// * `output_tx` - An MPSC sender to send `CommandOutput` chunks to the consumer (e.g., UI).
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success or an `anyhow::Error` if the command cannot be started.
     pub async fn execute_command_with_output_channel(
         &self,
         cmd: Command,
@@ -241,6 +266,15 @@ impl CommandManager {
     }
 
     /// Sends input to a running command's PTY session.
+    ///
+    /// # Arguments
+    ///
+    /// * `command_id` - The ID of the command to send input to.
+    /// * `input` - The string input to send.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success or an `anyhow::Error` if the command is not found or input fails.
     pub async fn send_input(&self, command_id: &str, input: &str) -> Result<()> {
         let active_ptys = self.active_ptys.lock().await;
         if let Some(pty_session) = active_ptys.get(command_id) {
@@ -253,6 +287,14 @@ impl CommandManager {
     }
 
     /// Terminates a running command's PTY session.
+    ///
+    /// # Arguments
+    ///
+    /// * `command_id` - The ID of the command to terminate.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success or an `anyhow::Error` if the command is not found or termination fails.
     pub async fn terminate_command(&self, command_id: &str) -> Result<()> {
         let mut active_ptys = self.active_ptys.lock().await;
         if let Some(pty_session) = active_ptys.remove(command_id) {
@@ -268,12 +310,17 @@ impl CommandManager {
     }
 
     /// Lists all currently active command IDs.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<String>` containing the IDs of all active commands.
     pub async fn list_active_commands(&self) -> Vec<String> {
         let active_ptys = self.active_ptys.lock().await;
         active_ptys.keys().cloned().collect()
     }
 }
 
+/// Initializes the command module.
 pub fn init() {
     info!("command module loaded");
 }

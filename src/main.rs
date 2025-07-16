@@ -1,3 +1,9 @@
+//! NeoTerm: A next-generation terminal with AI assistance.
+//!
+//! This is the main entry point for the NeoTerm application,
+//! handling the core application state, UI rendering, and
+//! interactions with various backend managers (AI, commands, workflows, etc.).
+
 use iced::{executor, Application, Command, Element, Settings, Theme};
 use iced::widget::{column, container, scrollable, text_input, button, row, text};
 use iced::keyboard::{self, KeyCode, Modifiers};
@@ -104,109 +110,173 @@ use serve_wasm::WasmServer; // Import WasmServer
 /// The main application state for NeoTerm.
 #[derive(Debug, Clone)]
 pub struct NeoTerm {
-   blocks: Vec<Block>,
-   input_bar: EnhancedTextInput,
-   
-   // Agent mode
-   agent_mode: Arc<RwLock<AgentMode>>,
-   agent_enabled: bool,
-   agent_streaming_rx: Option<mpsc::Receiver<AgentMessage>>,
-   
-   // Configuration
-   config: AppConfig,
-   settings_open: bool,
+    /// List of UI blocks displayed in the terminal.
+    blocks: Vec<Block>,
+    /// The enhanced text input bar for commands and AI queries.
+    input_bar: EnhancedTextInput,
+    
+    // Agent mode
+    /// The AI agent mode instance.
+    agent_mode: Arc<RwLock<AgentMode>>,
+    /// Flag indicating if agent mode is currently enabled.
+    agent_enabled: bool,
+    /// Receiver for streaming messages from the AI agent.
+    agent_streaming_rx: Option<mpsc::Receiver<AgentMessage>>,
+    
+    // Configuration
+    /// The current application configuration.
+    config: AppConfig,
+    /// Flag indicating if the settings panel is open.
+    settings_open: bool,
 
-   // Channels for PTY communication
-   pty_tx: mpsc::Sender<PtyMessage>,
-   pty_rx: mpsc::Receiver<PtyMessage>,
+    // Channels for PTY communication
+    /// Sender for PTY messages (e.g., to send commands to PTY).
+    pty_tx: mpsc::Sender<PtyMessage>,
+    /// Receiver for PTY messages (e.g., to receive output from PTY).
+    pty_rx: mpsc::Receiver<PtyMessage>,
 
-   // Workflow execution
-   workflow_executor: Arc<WorkflowExecutor>,
-   workflow_event_rx: mpsc::Receiver<WorkflowExecutionEvent>,
+    // Workflow execution
+    /// The workflow executor instance.
+    workflow_executor: Arc<WorkflowExecutor>,
+    /// Receiver for workflow execution events.
+    workflow_event_rx: mpsc::Receiver<WorkflowExecutionEvent>,
 
-   // Managers (Arc'd for sharing)
-   config_manager: Arc<ConfigManager>,
-   ai_assistant: Arc<RwLock<Assistant>>,
-   ai_context: Arc<RwLock<AIContext>>, // Add AIContext
-   workflow_manager: Arc<IcedWorkflowManager>,
-   plugin_manager: Arc<IcedPluginManager>,
-   sync_manager: Arc<SyncManager>,
-   collaboration_manager: Arc<IcedSessionSharingManager>,
-   command_manager: Arc<CommandManager>,
-   drive_manager: Arc<DriveManager>,
-   fuzzy_match_manager: Arc<FuzzyMatchManager>,
-   graphql_schema: Arc<graphql::AppSchema>,
-   language_manager: Arc<LanguageManager>,
-   lpc_engine: Arc<LpcEngine>,
-   markdown_parser: Arc<MarkdownParser>,
-   mcq_manager: Arc<McqManager>,
-   natural_language_detector: Arc<NaturalLanguageDetector>,
-   resource_manager: Arc<ResourceManager>,
-   settings_manager: Arc<SettingsManager>,
-   shell_manager: Arc<IcedShellManager>,
-   string_offset_manager: Arc<StringOffsetManager>,
-   sum_tree_manager: Arc<SumTreeManager>,
-   syntax_tree_manager: Arc<SyntaxTreeManager>,
-   virtual_file_system: Arc<IcedVirtualFileSystem>,
-   watcher: Arc<IcedWatcher>,
-   websocket_server: Arc<WebSocketServer>,
-   wasm_server: Arc<WasmServer>,
-   preferences: UserPreferences,
-   benchmark_results: Option<Vec<BenchmarkResult>>,
+    // Managers (Arc'd for sharing)
+    /// Manager for application configuration.
+    config_manager: Arc<ConfigManager>,
+    /// The AI assistant instance.
+    ai_assistant: Arc<RwLock<Assistant>>,
+    /// The AI context manager, providing relevant information to the AI.
+    ai_context: Arc<RwLock<AIContext>>,
+    /// Manager for workflows.
+    workflow_manager: Arc<IcedWorkflowManager>,
+    /// Manager for plugins.
+    plugin_manager: Arc<IcedPluginManager>,
+    /// Manager for cloud synchronization.
+    sync_manager: Arc<SyncManager>,
+    /// Manager for collaboration sessions.
+    collaboration_manager: Arc<IcedSessionSharingManager>,
+    /// Manager for command execution.
+    command_manager: Arc<CommandManager>,
+    /// Manager for drive operations.
+    drive_manager: Arc<DriveManager>,
+    /// Manager for fuzzy matching.
+    fuzzy_match_manager: Arc<FuzzyMatchManager>,
+    /// GraphQL schema for the API server.
+    graphql_schema: Arc<graphql::AppSchema>,
+    /// Manager for language-related functionalities.
+    language_manager: Arc<LanguageManager>,
+    /// LPC (Lars's Programming Language) engine.
+    lpc_engine: Arc<LpcEngine>,
+    /// Markdown parser.
+    markdown_parser: Arc<MarkdownParser>,
+    /// Multiple Choice Question manager.
+    mcq_manager: Arc<McqManager>,
+    /// Natural language detection manager.
+    natural_language_detector: Arc<NaturalLanguageDetector>,
+    /// Resource manager for static assets.
+    resource_manager: Arc<ResourceManager>,
+    /// Manager for application settings.
+    settings_manager: Arc<SettingsManager>,
+    /// Shell manager.
+    shell_manager: Arc<IcedShellManager>,
+    /// String offset manager.
+    string_offset_manager: Arc<StringOffsetManager>,
+    /// Sum tree manager.
+    sum_tree_manager: Arc<SumTreeManager>,
+    /// Syntax tree manager.
+    syntax_tree_manager: Arc<SyntaxTreeManager>,
+    /// Virtual file system manager.
+    virtual_file_system: Arc<IcedVirtualFileSystem>,
+    /// File watcher.
+    watcher: Arc<IcedWatcher>,
+    /// WebSocket server.
+    websocket_server: Arc<WebSocketServer>,
+    /// WebAssembly server.
+    wasm_server: Arc<WasmServer>,
+    /// User preferences.
+    preferences: UserPreferences,
+    /// Results of performance benchmarks.
+    benchmark_results: Option<Vec<BenchmarkResult>>,
 }
 
 /// Messages that can be sent to the `NeoTerm` application.
 #[derive(Debug, Clone)]
 pub enum Message {
-   Input(InputMessage),
-   ExecuteCommand,
-   PtyOutput(PtyMessage),
-   KeyboardEvent(keyboard::Event),
-   BlockAction(String, BlockMessage),
-   Tick,
-   
-   // Agent mode messages
-   ToggleAgentMode,
-   AgentStream(AgentMessage),
-   AgentStreamEnded,
-   AgentError(String),
-   CommandGenerated(String),
-   SuggestedFix(String),
-   UsageQuotaUpdated(String),
-   
-   // Settings messages
-   ToggleSettings,
-   SettingsMessage(settings::SettingsMessage),
-   
-   // Configuration
-   ConfigLoaded(AppConfig),
-   ConfigSaved,
+    /// Message from the input bar.
+    Input(InputMessage),
+    /// Trigger command execution.
+    ExecuteCommand,
+    /// Output received from a PTY session.
+    PtyOutput(PtyMessage),
+    /// Keyboard event.
+    KeyboardEvent(keyboard::Event),
+    /// Action performed on a UI block.
+    BlockAction(String, BlockMessage),
+    /// A periodic tick message for UI updates.
+    Tick,
+    
+    // Agent mode messages
+    /// Toggle AI agent mode on/off.
+    ToggleAgentMode,
+    /// Streamed message from the AI agent.
+    AgentStream(AgentMessage),
+    /// Indicates the AI agent stream has ended.
+    AgentStreamEnded,
+    /// An error occurred in the AI agent.
+    AgentError(String),
+    /// A command was generated by the AI.
+    CommandGenerated(String),
+    /// A suggested fix for a failed command from the AI.
+    SuggestedFix(String),
+    /// AI usage quota updated.
+    UsageQuotaUpdated(String),
+    
+    // Settings messages
+    /// Toggle the settings panel open/closed.
+    ToggleSettings,
+    /// Message from the settings view.
+    SettingsMessage(settings::SettingsMessage),
+    
+    // Configuration
+    /// Application configuration has been loaded.
+    ConfigLoaded(AppConfig),
+    /// Application configuration has been saved.
+    ConfigSaved,
 
-   // Performance Benchmarks
-   RunBenchmarks,
-   BenchmarkResults(BenchmarkSuite),
+    // Performance Benchmarks
+    /// Trigger running performance benchmarks.
+    RunBenchmarks,
+    /// Results of performance benchmarks.
+    BenchmarkResults(BenchmarkSuite),
 
-   // Workflow messages
-   WorkflowExecutionEvent(WorkflowExecutionEvent),
-   UserResponseToAgentPrompt(String, String),
+    // Workflow messages
+    /// Event from workflow execution.
+    WorkflowExecutionEvent(WorkflowExecutionEvent),
+    /// User's response to an agent prompt.
+    UserResponseToAgentPrompt(String, String),
 }
 
 /// Messages related to PTY (Pseudo-Terminal) operations.
 #[derive(Debug, Clone)]
 pub enum PtyMessage {
+    /// A chunk of output from the PTY.
     OutputChunk {
         block_id: String,
         content: String,
         is_stdout: bool,
     },
+    /// Command completed with an exit code.
     Completed {
         block_id: String,
         exit_code: i32,
     },
+    /// Command failed with an error message.
     Failed {
         block_id: String,
         error: String,
     },
+    /// Command was killed.
     Killed {
         block_id: String,
     },
@@ -215,18 +285,31 @@ pub enum PtyMessage {
 /// Messages related to individual UI blocks.
 #[derive(Debug, Clone)]
 pub enum BlockMessage {
+    /// Rerun the command associated with the block.
     Rerun,
+    /// Delete the block from the UI.
     Delete,
+    /// Copy the content of the block to clipboard.
     Copy,
+    /// Export the content of the block.
     Export,
+    /// Toggle the collapsed state of the block.
     ToggleCollapse,
+    /// Send the block's content to the AI for analysis.
     SendToAI,
+    /// Request AI to suggest a fix for a failed command block.
     SuggestFix,
+    /// Request AI to explain the output of a command or error block.
     ExplainOutput,
+    /// Accept a suggested workflow.
     AcceptWorkflow,
+    /// Reject a suggested workflow.
     RejectWorkflow,
+    /// User input changed for an agent prompt block.
     AgentPromptInputChanged(String),
+    /// Submit the response for an agent prompt block.
     SubmitAgentPrompt,
+    /// Fetch AI usage quota.
     FetchUsageQuota,
 }
 
@@ -237,6 +320,9 @@ impl Application for NeoTerm {
     type Flags = ();
 
     /// Initializes the application state and returns the initial command.
+    ///
+    /// This function sets up all core managers, AI components, and communication channels.
+    /// It also adds initial sample blocks to the UI.
     fn new(_flags: ()) -> (Self, Command<Message>) {
         // Initialize channels for inter-module communication
         let (pty_tx, pty_rx) = mpsc::channel(100);
@@ -425,6 +511,17 @@ impl Application for NeoTerm {
     }
 
     /// Updates the application state based on incoming messages.
+    ///
+    /// This is the central update loop for the Iced application, handling
+    /// all user interactions, backend events, and state transitions.
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - The `Message` to process.
+    ///
+    /// # Returns
+    ///
+    /// An `iced::Command` to be executed by the runtime.
     fn update(&mut self, message: Message) -> Command<Message> {
         match message {
             Message::Input(input_message) => {
@@ -775,6 +872,14 @@ impl Application for NeoTerm {
         }
     }
 
+    /// Renders the main application UI.
+    ///
+    /// This function constructs the Iced UI, including the toolbar,
+    /// the scrollable list of blocks, and the input bar.
+    ///
+    /// # Returns
+    ///
+    /// An `iced::Element` representing the application's view.
     fn view(&self) -> Element<Message> {
         if self.settings_open {
             let mut settings_view = settings::SettingsView::new(self.config.clone());
@@ -814,6 +919,14 @@ impl Application for NeoTerm {
             .into()
     }
 
+    /// Defines the application's subscriptions to external events.
+    ///
+    /// This includes periodic ticks, PTY output, keyboard events,
+    /// AI agent streams, and workflow execution events.
+    ///
+    /// # Returns
+    ///
+    /// An `iced::Subscription` that the runtime will listen to.
     fn subscription(&self) -> iced::Subscription<Message> {
         let agent_stream_sub = if let Some(rx) = self.agent_streaming_rx.clone() {
             iced::Subscription::unfold(
@@ -841,6 +954,11 @@ impl Application for NeoTerm {
 }
 
 impl NeoTerm {
+    /// Creates the application toolbar with various action buttons.
+    ///
+    /// # Returns
+    ///
+    /// An `iced::Element` representing the toolbar.
     fn create_toolbar(&self) -> Element<Message> {
         let agent_button = button(
             text(if self.agent_enabled { "🤖 Agent ON" } else { "🤖 Agent OFF" })
@@ -861,6 +979,19 @@ impl NeoTerm {
             .into()
     }
 
+    /// Handles AI-related commands entered by the user.
+    ///
+    /// This function distinguishes between direct AI chat, command generation requests,
+    /// and contextual AI analysis based on a provided block ID.
+    ///
+    /// # Arguments
+    ///
+    /// * `command` - The full command string entered by the user (e.g., "#explain this").
+    /// * `context_block_id` - An optional ID of a UI block to provide as context to the AI.
+    ///
+    /// # Returns
+    ///
+    /// An `iced::Command` to initiate AI interaction.
     fn handle_ai_command(&mut self, command: String, context_block_id: Option<String>) -> Command<Message> {
         let prompt_content = command.trim_start_matches('#').trim_start_matches("/ai").trim().to_string();
         
@@ -926,6 +1057,18 @@ impl NeoTerm {
     }
 
     /// Handles actions performed on individual UI blocks.
+    ///
+    /// This function processes various `BlockMessage` types, such as rerunning commands,
+    /// deleting blocks, copying content, exporting, toggling collapse, and AI interactions.
+    ///
+    /// # Arguments
+    ///
+    /// * `block_id` - The ID of the block on which the action is performed.
+    /// * `action` - The `BlockMessage` representing the action.
+    ///
+    /// # Returns
+    ///
+    /// An `iced::Command` to update the UI or trigger backend operations.
     fn handle_block_action(&mut self, block_id: String, action: BlockMessage) -> Command<Message> {
         if let Some(block_index) = self.blocks.iter().position(|b| b.id == block_id) {
             let block = &mut self.blocks[block_index];
@@ -1147,6 +1290,18 @@ impl NeoTerm {
         }
     }
 
+    /// Executes a shell command using the command manager.
+    ///
+    /// This function creates a new command block, adds it to the UI,
+    /// and then dispatches the command for execution via a PTY session.
+    ///
+    /// # Arguments
+    ///
+    /// * `command` - The command string to execute.
+    ///
+    /// # Returns
+    ///
+    /// An `iced::Command` to initiate command execution.
     fn execute_command(&mut self, command: String) -> Command<Message> {
         let command_block = Block::new_command(command.clone());
         let block_id = command_block.id.clone();
@@ -1240,6 +1395,7 @@ impl NeoTerm {
         )
     }
 
+    /// Adds initial sample blocks to the UI for demonstration purposes.
     fn add_sample_blocks(&mut self) {
         let welcome_block = Block::new_info(
             "Welcome to NeoPilot Terminal".to_string(),
@@ -1256,23 +1412,39 @@ impl NeoTerm {
         self.blocks.push(sample_output);
     }
 
+    /// Creates a subscription for PTY manager events.
+    ///
+    /// This subscription listens for output and status updates from PTY sessions
+    /// and converts them into `Message::PtyOutput` for the application's update loop.
+    ///
+    /// # Returns
+    ///
+    /// An `iced::Subscription` for PTY events.
     fn pty_manager_subscription(&self) -> iced::Subscription<Message> {
         iced::Subscription::unfold(
             "pty_manager_events",
             self.pty_rx.clone(),
             |mut receiver| async move {
-                let msg = receiver.recv().await.unwrap();
+                let msg = receiver.recv().await.expect("PTY receiver closed unexpectedly");
                 (Message::PtyOutput(msg), receiver)
             },
         )
     }
 
+    /// Creates a subscription for workflow executor events.
+    ///
+    /// This subscription listens for events related to workflow execution
+    /// and converts them into `Message::WorkflowExecutionEvent` for the application's update loop.
+    ///
+    /// # Returns
+    ///
+    /// An `iced::Subscription` for workflow events.
     fn workflow_executor_subscription(&self) -> iced::Subscription<Message> {
         iced::Subscription::unfold(
             "workflow_executor_events",
             self.workflow_event_rx.clone(),
             |mut receiver| async move {
-                let msg = receiver.recv().await.unwrap();
+                let msg = receiver.recv().await.expect("Workflow event receiver closed unexpectedly");
                 (Message::WorkflowExecutionEvent(msg), receiver)
             },
         )
@@ -1280,6 +1452,7 @@ impl NeoTerm {
 }
 
 impl PtyMessage {
+    /// Returns the block ID associated with the PTY message.
     fn get_block_id(&self) -> &str {
         match self {
             PtyMessage::OutputChunk { block_id, .. } => block_id,
@@ -1290,6 +1463,11 @@ impl PtyMessage {
     }
 }
 
+/// The main entry point for the NeoTerm application.
+///
+/// This function initializes logging, Sentry for error reporting,
+/// parses command-line arguments, initializes all core modules,
+/// and then runs either the Iced GUI or a headless CLI command based on arguments.
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))

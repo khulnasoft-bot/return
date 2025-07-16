@@ -1,3 +1,10 @@
+//! This module defines the core data structures and traits for workflows in NeoTerm.
+//! Workflows are sequences of steps that can automate tasks, interact with the AI,
+//! execute commands, and integrate with plugins.
+//!
+//! It includes definitions for `Workflow`, `WorkflowStep`, `WorkflowArgument`,
+//! and related enums, along with parsing, validation, and search capabilities.
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -15,6 +22,7 @@ pub use executor::*;
 pub use ui::*;
 pub use debugger::*;
 
+/// Represents a complete workflow, defining a sequence of automated steps.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workflow {
     /// A unique identifier for the workflow.
@@ -55,6 +63,7 @@ pub struct Workflow {
     pub usage_count: u32,
 }
 
+/// Represents a single step within a workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowStep {
     /// A unique identifier for the step within the workflow.
@@ -83,6 +92,7 @@ pub struct WorkflowStep {
     pub output_variable: Option<String>,
 }
 
+/// Defines the type of action a workflow step performs.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum WorkflowStepType {
@@ -119,6 +129,7 @@ pub enum WorkflowStepType {
     },
 }
 
+/// Defines how the output of a workflow step should be processed.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum WorkflowOutputFormat {
@@ -128,6 +139,7 @@ pub enum WorkflowOutputFormat {
     Regex { pattern: String },
 }
 
+/// Supported shell types for workflow compatibility.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Shell {
@@ -136,6 +148,7 @@ pub enum Shell {
     Fish,
 }
 
+/// Defines a parameterized argument for a workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowArgument {
     /// The name of the argument. Required.
@@ -154,6 +167,7 @@ pub struct WorkflowArgument {
     pub options: Option<Vec<String>>,
 }
 
+/// Defines the data type of a workflow argument for validation.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ArgumentType {
@@ -167,6 +181,7 @@ pub enum ArgumentType {
     Enum,
 }
 
+/// Represents an active execution of a workflow.
 #[derive(Debug, Clone)]
 pub struct WorkflowExecution {
     pub workflow: Workflow,
@@ -175,6 +190,7 @@ pub struct WorkflowExecution {
     pub shell: Shell,
 }
 
+/// Represents the result of a workflow search.
 #[derive(Debug, Clone)]
 pub struct WorkflowSearchResult {
     pub workflow: Workflow,
@@ -182,30 +198,50 @@ pub struct WorkflowSearchResult {
     pub matched_fields: Vec<String>,
 }
 
+/// Custom error types for workflow operations.
 #[derive(Debug, thiserror::Error)]
 pub enum WorkflowError {
+    /// Error during parsing of workflow definition (e.g., invalid YAML).
     #[error("Parse error: {0}")]
     ParseError(String),
+    /// Error during validation of workflow structure or content.
     #[error("Validation error: {0}")]
     ValidationError(String),
+    /// Error during file I/O operations (e.g., reading/writing workflow files).
     #[error("IO error: {0}")]
     IoError(String),
+    /// Error related to workflow arguments (e.g., invalid format, missing).
     #[error("Argument error: {0}")]
     ArgumentError(String),
+    /// The specified shell is not supported by the workflow or the system.
     #[error("Shell not supported: {0:?}")]
     UnsupportedShell(Shell),
+    /// A required workflow argument was not provided.
     #[error("Missing required argument: {0}")]
     MissingArgument(String),
+    /// An argument was provided with an invalid value or type.
     #[error("Invalid argument value: {0}")]
     InvalidArgumentValue(String),
+    /// The requested workflow could not be found.
     #[error("Workflow not found: {0}")]
     WorkflowNotFound(String),
+    /// General error during workflow step execution.
     #[error("Execution error: {0}")]
     ExecutionError(String),
 }
 
 impl Workflow {
-    /// Parse workflow from YAML string
+    /// Parses a workflow from a YAML string.
+    ///
+    /// Ensures all steps have unique IDs and validates the workflow structure.
+    ///
+    /// # Arguments
+    ///
+    /// * `yaml_str` - The YAML string representing the workflow.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the parsed `Workflow` or a `WorkflowError`.
     pub fn from_yaml(yaml_str: &str) -> Result<Self, WorkflowError> {
         let mut workflow: Workflow = serde_yaml::from_str(yaml_str)
             .map_err(|e| WorkflowError::ParseError(e.to_string()))?;
@@ -221,13 +257,25 @@ impl Workflow {
         Ok(workflow)
     }
 
-    /// Convert workflow to YAML string
+    /// Converts the workflow to a YAML string.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the YAML string or a `WorkflowError`.
     pub fn to_yaml(&self) -> Result<String, WorkflowError> {
         serde_yaml::to_string(self)
             .map_err(|e| WorkflowError::ParseError(e.to_string()))
     }
 
-    /// Load workflow from file
+    /// Loads a workflow from a file.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path to the workflow YAML file.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the loaded `Workflow` or a `WorkflowError`.
     pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, WorkflowError> {
         let content = std::fs::read_to_string(&path)
             .map_err(|e| WorkflowError::IoError(e.to_string()))?;
@@ -237,7 +285,15 @@ impl Workflow {
         Ok(workflow)
     }
 
-    /// Save workflow to file
+    /// Saves the workflow to a file.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path where the workflow YAML file should be saved.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success or a `WorkflowError`.
     pub fn to_file<P: AsRef<std::path::Path>>(&self, path: P) -> Result<(), WorkflowError> {
         let yaml_str = self.to_yaml()?;
         std::fs::write(&path, yaml_str)
@@ -245,7 +301,14 @@ impl Workflow {
         Ok(())
     }
 
-    /// Validate workflow structure and content
+    /// Validates the workflow structure and content.
+    ///
+    /// Checks for required fields, valid shell types, argument consistency,
+    /// and step-specific validations.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success or a `WorkflowError` if validation fails.
     pub fn validate(&self) -> Result<(), WorkflowError> {
         if self.name.trim().is_empty() {
             return Err(WorkflowError::ValidationError("Name is required".to_string()));
@@ -326,7 +389,12 @@ impl Workflow {
         Ok(())
     }
 
-    /// Extract all placeholders from the command (now also from step commands)
+    /// Extracts all placeholders (e.g., `{{arg_name}}`) from workflow arguments' default values
+    /// and command steps.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<String>` containing the names of all found placeholders.
     pub fn extract_placeholders(&self) -> Vec<String> {
         let mut placeholders = Vec::new();
         
@@ -381,12 +449,26 @@ impl Workflow {
         placeholders
     }
 
-    /// Check if workflow is compatible with given shell
+    /// Checks if the workflow is compatible with a given shell.
+    ///
+    /// If `shells` is `None` or empty, it's considered compatible with all shells.
+    ///
+    /// # Arguments
+    ///
+    /// * `shell` - The `Shell` to check compatibility against.
+    ///
+    /// # Returns
+    ///
+    /// `true` if compatible, `false` otherwise.
     pub fn is_compatible_with_shell(&self, shell: &Shell) -> bool {
         self.shells.as_ref().map_or(true, |shells| shells.contains(shell))
     }
 
-    /// Get workflow category based on tags
+    /// Determines the category of the workflow based on its tags.
+    ///
+    /// # Returns
+    ///
+    /// A `WorkflowCategory` enum value.
     pub fn get_category(&self) -> WorkflowCategory {
         for tag in &self.tags {
             match tag.to_lowercase().as_str() {
@@ -404,7 +486,18 @@ impl Workflow {
         WorkflowCategory::Other
     }
 
-    /// Calculate search relevance score
+    /// Calculates a search relevance score for the workflow based on a query.
+    ///
+    /// The score is influenced by matches in name, tags, description, commands,
+    /// author, and usage frequency.
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - The search query string.
+    ///
+    /// # Returns
+    ///
+    /// A `f32` representing the search score.
     pub fn calculate_search_score(&self, query: &str) -> f32 {
         let query_lower = query.to_lowercase();
         let mut score = 0.0;
@@ -450,13 +543,14 @@ impl Workflow {
             }
         }
 
-        // Usage frequency bonus
+        // Usage frequency bonus (logarithmic scale)
         score += (self.usage_count as f32).log10();
 
         score
     }
 }
 
+/// Categorization of workflows.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkflowCategory {
     Git,
