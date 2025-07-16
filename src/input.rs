@@ -2,7 +2,7 @@
 //! and intelligent suggestions for commands and files.
 //! It provides an `EnhancedTextInput` widget for the Iced GUI.
 
-use iced::{Element, widget::{text_input, column, row, container, button, text}};
+use iced::{Element, widget::{text_input, column, row, container, button, text, pick_list}, Length};
 use iced::keyboard::{self, KeyCode, Modifiers};
 use iced::{keyboard::Event as KeyEvent, Event as IcedEvent};
 use std::collections::{VecDeque, HashMap};
@@ -18,6 +18,9 @@ pub struct EnhancedTextInput {
     history: VecDeque<String>,
     history_index: Option<usize>,
     live_preview: String,
+    // New fields for AI model selection
+    available_ai_models: Vec<String>,
+    selected_ai_model: Option<String>,
 }
 
 /// Represents a single suggestion for the input field.
@@ -26,7 +29,7 @@ pub struct Suggestion {
     pub text: String,
     pub description: Option<String>,
     pub suggestion_type: SuggestionType,
-    pub score: f32,
+    pub score: f30,
 }
 
 /// Defines the type of a suggestion.
@@ -63,6 +66,13 @@ pub enum Message {
     NavigateSuggestions(Direction),
     ApplySuggestion,
     HistoryNavigated(HistoryDirection),
+    // New messages for AI model selection and icon clicks
+    AiModelSelected(String),
+    ToggleAiMode,
+    ToggleLightbulb,
+    ToggleMicrophone,
+    ToggleAtSymbol,
+    ToggleImage,
 }
 
 impl EnhancedTextInput {
@@ -75,6 +85,12 @@ impl EnhancedTextInput {
             history: VecDeque::new(),
             history_index: None,
             live_preview: String::new(),
+            available_ai_models: vec![
+                "claude 4 sonnet".to_string(),
+                "gpt-4o".to_string(),
+                "llama3".to_string(),
+            ],
+            selected_ai_model: Some("claude 4 sonnet".to_string()),
         }
     }
 
@@ -141,6 +157,30 @@ impl EnhancedTextInput {
                     self.active_suggestion = None;
                     self.live_preview.clear();
                 }
+            }
+            Message::AiModelSelected(model) => {
+                self.selected_ai_model = Some(model);
+                info!("AI Model selected: {:?}", self.selected_ai_model);
+            }
+            Message::ToggleAiMode => {
+                info!("Toggle AI Mode clicked!");
+                // Implement AI mode toggle logic here
+            }
+            Message::ToggleLightbulb => {
+                info!("Toggle Lightbulb clicked!");
+                // Implement lightbulb (suggestions/hints) toggle logic here
+            }
+            Message::ToggleMicrophone => {
+                info!("Toggle Microphone clicked!");
+                // Implement microphone (voice input) toggle logic here
+            }
+            Message::ToggleAtSymbol => {
+                info!("Toggle At Symbol clicked!");
+                // Implement @ (mentions/context) toggle logic here
+            }
+            Message::ToggleImage => {
+                info!("Toggle Image clicked!");
+                // Implement image (insert image) toggle logic here
             }
         }
     }
@@ -393,7 +433,8 @@ impl EnhancedTextInput {
         let input_with_prompt = row![
             text(prompt_indicator).size(16),
             input
-        ].spacing(8);
+        ].spacing(8)
+        .width(Length::Fill);
 
         // Render suggestions if available
         let suggestions_view = if !self.suggestions.is_empty() {
@@ -450,7 +491,36 @@ impl EnhancedTextInput {
             column![].into()
         };
 
-        column![input_with_prompt, suggestions_view].spacing(4).into()
+        // AI model dropdown
+        let ai_model_dropdown = pick_list(
+            self.available_ai_models.clone(),
+            self.selected_ai_model.clone(),
+            Message::AiModelSelected,
+        )
+        .padding(8)
+        .width(Length::Shrink);
+
+        // Action buttons/icons
+        let action_buttons = row![
+            button(text("A").size(16)).on_press(Message::ToggleAiMode).padding(8),
+            button(text("💡").size(16)).on_press(Message::ToggleLightbulb).padding(8),
+            button(text("🎤").size(16)).on_press(Message::ToggleMicrophone).padding(8),
+            button(text("@").size(16)).on_press(Message::ToggleAtSymbol).padding(8),
+            button(text("🖼️").size(16)).on_press(Message::ToggleImage).padding(8),
+            ai_model_dropdown,
+        ]
+        .spacing(8)
+        .align_items(iced::Alignment::Center);
+
+        column![
+            input_with_prompt,
+            suggestions_view,
+            Rule::horizontal(1), // Separator line
+            action_buttons
+        ]
+        .spacing(4)
+        .padding(8)
+        .into()
     }
 }
 

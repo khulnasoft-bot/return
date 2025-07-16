@@ -1,4 +1,4 @@
-use iced::{Element, widget::{column, row, text, button, scrollable}, Length, Color, alignment, Command};
+use iced::{Element, widget::{column, row, text, button, scrollable, horizontal_rule}, Length, Color, alignment, Command};
 use crate::config::*;
 use std::sync::Arc;
 use log::{info, error};
@@ -7,7 +7,8 @@ pub mod theme_editor;
 pub mod keybinding_editor;
 pub mod yaml_theme_ui;
 pub mod appearance_settings;
-pub mod indexing_settings; // Import the new module
+pub mod indexing_settings;
+pub mod ai_settings; // Import the new module
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingsTab {
@@ -18,14 +19,14 @@ pub enum SettingsTab {
     KeyBindings,
     Themes,
     Plugins,
-    AI,
+    AI, // Add new tab
     Privacy,
     Performance,
     Collaboration,
     CloudSync,
     Drive,
     Workflows,
-    Indexing, // Add new tab
+    Indexing,
     About,
 }
 
@@ -41,20 +42,22 @@ pub enum SettingsMessage {
     KeybindingEditor(keybinding_editor::KeybindingEditorMessage),
     ThemeEditor(theme_editor::ThemeEditorMessage),
     AppearanceSettings(appearance_settings::AppearanceSettingsMessage),
-    IndexingSettings(indexing_settings::IndexingSettingsMessage), // Add new message
+    IndexingSettings(indexing_settings::IndexingSettingsMessage),
+    AiSettings(ai_settings::AiSettingsMessage), // Add new message
     SaveAll,
     CancelAll,
 }
 
-#[derive(Debug)] // Derive Debug for SettingsView
+#[derive(Debug)]
 pub struct SettingsView {
-    pub config: AppConfig, // Holds the current application configuration
+    pub config: AppConfig,
     selected_tab: SettingsTab,
     keybinding_editor: keybinding_editor::KeybindingEditor,
     theme_editor: theme_editor::ThemeEditor,
     appearance_settings: appearance_settings::AppearanceSettings,
-    indexing_settings: indexing_settings::IndexingSettings, // Add new field
-    config_manager: Arc<ConfigManager>, // Shared reference to the ConfigManager
+    indexing_settings: indexing_settings::IndexingSettings,
+    ai_settings: ai_settings::AiSettings, // Add new field
+    config_manager: Arc<ConfigManager>,
 }
 
 impl SettingsView {
@@ -65,10 +68,10 @@ impl SettingsView {
 
         let keybindings = config.preferences.keybindings.clone();
         let appearance_prefs = config.preferences.ui.clone();
-        let indexing_prefs = config.preferences.indexing.clone(); // Clone indexing preferences
+        let indexing_prefs = config.preferences.indexing.clone();
+        let ai_prefs = config.preferences.ai.clone(); // Clone AI preferences
 
         let mut theme_editor = theme_editor::ThemeEditor::new(config_manager.clone());
-        // Load initial state for theme editor
         tokio::runtime::Handle::current().block_on(async {
             theme_editor.load_initial_state().await;
         });
@@ -79,16 +82,13 @@ impl SettingsView {
             keybinding_editor: keybinding_editor::KeybindingEditor::new(keybindings),
             theme_editor,
             appearance_settings: appearance_settings::AppearanceSettings::new(appearance_prefs),
-            indexing_settings: indexing_settings::IndexingSettings::new(indexing_prefs), // Initialize new settings
+            indexing_settings: indexing_settings::IndexingSettings::new(indexing_prefs),
+            ai_settings: ai_settings::AiSettings::new(ai_prefs), // Initialize new settings
             config_manager,
         }
     }
 
     pub async fn init(&mut self) {
-        // Re-initialize components that need async setup
-        // This method is currently not called in main.rs, but would be used for async setup
-        // if SettingsView itself needed to be initialized asynchronously.
-        // For now, `new` handles the async setup for sub-components.
         info!("SettingsView init called (placeholder).");
     }
 
@@ -100,24 +100,26 @@ impl SettingsView {
             }
             SettingsMessage::KeybindingEditor(msg) => {
                 let command = self.keybinding_editor.update(msg);
-                // Update the main config's preferences after keybinding editor updates
                 self.config.preferences.keybindings = self.keybinding_editor.keybindings.clone();
-                command.map(SettingsMessage::KeybindingEditor) // Propagate commands from sub-editor
+                command.map(SettingsMessage::KeybindingEditor)
             }
             SettingsMessage::ThemeEditor(msg) => {
                 let command = self.theme_editor.update(msg);
-                // No direct config update here, ThemeEditor handles its own persistence via ConfigManager
                 command.map(SettingsMessage::ThemeEditor)
             }
             SettingsMessage::AppearanceSettings(msg) => {
                 self.appearance_settings.update(msg);
-                // Update the main config's preferences after appearance settings updates
                 self.config.preferences.ui = self.appearance_settings.preferences.clone();
                 Command::none()
             }
-            SettingsMessage::IndexingSettings(msg) => { // Handle new message
+            SettingsMessage::IndexingSettings(msg) => {
                 self.indexing_settings.update(msg);
                 self.config.preferences.indexing = self.indexing_settings.preferences.clone();
+                Command::none()
+            }
+            SettingsMessage::AiSettings(msg) => { // Handle new message
+                self.ai_settings.update(msg);
+                self.config.preferences.ai = self.ai_settings.preferences.clone();
                 Command::none()
             }
             SettingsMessage::SaveAll => {
@@ -131,16 +133,15 @@ impl SettingsView {
                             info!("All settings saved successfully.");
                         }
                     },
-                    |_| SettingsMessage::CancelAll // A dummy message to signal completion, could be a more specific "Saved" message
+                    |_| SettingsMessage::CancelAll
                 )
             }
             SettingsMessage::CancelAll => {
-                // Reload original config to discard changes
                 self.config = AppConfig::load().unwrap_or_default();
                 self.keybinding_editor = keybinding_editor::KeybindingEditor::new(self.config.preferences.keybindings.clone());
                 self.appearance_settings = appearance_settings::AppearanceSettings::new(self.config.preferences.ui.clone());
-                self.indexing_settings = indexing_settings::IndexingSettings::new(self.config.preferences.indexing.clone()); // Reload new settings
-                // Re-initialize theme editor to load its state from disk
+                self.indexing_settings = indexing_settings::IndexingSettings::new(self.config.preferences.indexing.clone());
+                self.ai_settings = ai_settings::AiSettings::new(self.config.preferences.ai.clone()); // Reload new settings
                 let config_manager_clone = self.config_manager.clone();
                 let mut theme_editor_reloaded = theme_editor::ThemeEditor::new(config_manager_clone);
                 tokio::runtime::Handle::current().block_on(async {
@@ -153,7 +154,7 @@ impl SettingsView {
     }
 
     pub fn view(&self) -> Element<SettingsMessage> {
-        let header = text("Application Settings").size(30).color(Color::WHITE); // Changed to white for dark theme
+        let header = text("Application Settings").size(30).color(Color::WHITE);
 
         let sidebar = column![
             self.nav_button(SettingsTab::General, "General"),
@@ -163,8 +164,8 @@ impl SettingsView {
             self.nav_button(SettingsTab::KeyBindings, "Keybindings"),
             self.nav_button(SettingsTab::Themes, "Themes"),
             self.nav_button(SettingsTab::Plugins, "Plugins"),
-            self.nav_button(SettingsTab::AI, "AI"),
-            self.nav_button(SettingsTab::Indexing, "Indexing"), // Add new nav button
+            self.nav_button(SettingsTab::AI, "AI"), // Add new nav button
+            self.nav_button(SettingsTab::Indexing, "Indexing"),
             self.nav_button(SettingsTab::Privacy, "Privacy"),
             self.nav_button(SettingsTab::Performance, "Performance"),
             self.nav_button(SettingsTab::Collaboration, "Collaboration"),
@@ -184,8 +185,8 @@ impl SettingsView {
             SettingsTab::KeyBindings => self.keybinding_editor.view().map(SettingsMessage::KeybindingEditor),
             SettingsTab::Themes => self.theme_editor.view().map(SettingsMessage::ThemeEditor),
             SettingsTab::Plugins => text("Plugins Settings Placeholder").size(20).color(Color::WHITE).into(),
-            SettingsTab::AI => text("AI Settings Placeholder").size(20).color(Color::WHITE).into(),
-            SettingsTab::Indexing => self.indexing_settings.view().map(SettingsMessage::IndexingSettings), // Render new settings
+            SettingsTab::AI => self.ai_settings.view().map(SettingsMessage::AiSettings), // Render new settings
+            SettingsTab::Indexing => self.indexing_settings.view().map(SettingsMessage::IndexingSettings),
             SettingsTab::Privacy => text("Privacy Settings Placeholder").size(20).color(Color::WHITE).into(),
             SettingsTab::Performance => text("Performance Settings Placeholder").size(20).color(Color::WHITE).into(),
             SettingsTab::Collaboration => text("Collaboration Settings Placeholder").size(20).color(Color::WHITE).into(),
@@ -229,9 +230,9 @@ impl SettingsView {
         button(text(label).size(16).color(if is_selected { Color::BLACK } else { Color::WHITE }))
             .on_press(SettingsMessage::TabSelected(tab))
             .style(if is_selected {
-                iced::theme::Button::Primary // Blue background for selected
+                iced::theme::Button::Primary
             } else {
-                iced::theme::Button::Text // Transparent background for unselected
+                iced::theme::Button::Text
             })
             .width(Length::Fill)
             .into()

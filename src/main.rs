@@ -13,7 +13,7 @@ use uuid::Uuid;
 use std::collections::HashMap;
 use std::sync::Arc;
 use futures_util::StreamExt;
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, Duration}; // Import Duration
 use clap::Parser;
 use anyhow::Result;
 use log::{error, info};
@@ -273,15 +273,18 @@ pub enum PtyMessage {
     Completed {
         block_id: String,
         exit_code: i32,
+        duration: Duration, // Add duration
     },
     /// Command failed with an error message.
     Failed {
         block_id: String,
         error: String,
+        duration: Duration, // Add duration
     },
     /// Command was killed.
     Killed {
         block_id: String,
+        duration: Duration, // Add duration
     },
 }
 
@@ -558,8 +561,11 @@ impl Application for NeoTerm {
                         PtyMessage::OutputChunk { content, is_stdout, .. } => {
                             block.add_output_line(content, is_stdout);
                         }
-                        PtyMessage::Completed { exit_code, block_id: _ } => {
+                        PtyMessage::Completed { exit_code, duration, block_id: _ } => {
                             block.set_status(format!("Completed with exit code: {}", exit_code));
+                            if let BlockContent::Command { end_time, .. } = &mut block.content {
+                                *end_time = Some(Local::now()); // Ensure end_time is set
+                            }
                             if exit_code != 0 {
                                 block.set_error(true);
                                 // Trigger AI fix suggestion
@@ -589,9 +595,12 @@ impl Application for NeoTerm {
                                 }
                             }
                         }
-                        PtyMessage::Failed { error, block_id: _ } => {
+                        PtyMessage::Failed { error, duration, block_id: _ } => {
                             block.set_status(format!("Failed: {}", error));
                             block.set_error(true);
+                            if let BlockContent::Command { end_time, .. } = &mut block.content {
+                                *end_time = Some(Local::now()); // Ensure end_time is set
+                            }
                             // Trigger AI fix suggestion
                             if let BlockContent::Command { input, .. } = &block.content {
                                 let original_command = input.clone();
@@ -608,9 +617,12 @@ impl Application for NeoTerm {
                                 );
                             }
                         }
-                        PtyMessage::Killed { block_id: _ } => {
+                        PtyMessage::Killed { duration, block_id: _ } => {
                             block.set_status("Killed".to_string());
                             block.set_error(true);
+                            if let BlockContent::Command { end_time, .. } = &mut block.content {
+                                *end_time = Some(Local::now()); // Ensure end_time is set
+                            }
                         }
                     }
                 }
@@ -1116,9 +1128,11 @@ impl NeoTerm {
             let block = &mut self.blocks[block_index];
             match action {
                 BlockMessage::Rerun => {
-                    if let BlockContent::Command { input, .. } = &block.content {
+                    if let BlockContent::Command { input, working_directory, .. } = &block.content {
                         let command = input.clone();
-                        self.execute_command(command)
+                        let wd = working_directory.clone();
+                        // Re-execute the command, passing the original working directory
+                        self.execute_command_with_wd(command, wd)
                     } else {
                         Command::none()
                     }
@@ -1347,7 +1361,26 @@ impl NeoTerm {
     ///
     /// An `iced::Command` to initiate command execution.
     fn execute_command(&mut self, command: String) -> Command<Message> {
-        let command_block = Block::new_command(command.clone());
+        // Get current working directory
+        let current_dir = std::env::current_dir()
+            .ok()
+            .and_then(|p| p.to_str().map(|s| s.to_string()));
+
+        self.execute_command_with_wd(command, current_dir)
+    }
+
+    /// Executes a shell command with a specified working directory.
+    ///
+    /// # Arguments
+    ///
+    /// * `command` - The command string to execute.
+    /// * `working_directory` - The working directory for the command.
+    ///
+    /// # Returns
+    ///
+    /// An `iced::Command` to initiate command execution.
+    fn execute_command_with_wd(&mut self, command: String, working_directory: Option<String>) -> Command<Message> {
+        let command_block = Block::new_command(command.clone(), working_directory.clone());
         let block_id = command_block.id.clone();
         self.blocks.push(command_block);
         
@@ -1367,6 +1400,7 @@ impl NeoTerm {
                     return Message::PtyOutput(PtyMessage::Failed {
                         block_id: block_id.clone(),
                         error: "No command provided.".to_string(),
+                        duration: Duration::zero(),
                     });
                 }
                 let cmd_executable = parts[0].to_string();
@@ -1379,9 +1413,11 @@ impl NeoTerm {
                     executable: cmd_executable,
                     args: cmd_args,
                     env: env_vars,
-                    working_dir: None, // Use current working directory
+                    working_dir: working_directory.map(PathBuf::from), // Use the provided working directory
                     output_format: command::CommandOutputFormat::PlainText,
                 };
+
+                let start_time = Local::now();
 
                 match command_manager_clone.execute_command_with_output_channel(cmd_obj, pty_tx.clone()).await {
                     Ok(mut output_receiver) => {
@@ -1404,22 +1440,31 @@ impl NeoTerm {
                                     }
                                 }
                                 CommandStatus::Completed(exit_code) => {
+                                    let end_time = Local::now();
+                                    let duration = end_time.signed_duration_since(start_time);
                                     let _ = pty_tx.send(PtyMessage::Completed {
                                         block_id: block_id.clone(),
                                         exit_code,
+                                        duration,
                                     }).await;
                                     break;
                                 }
                                 CommandStatus::Failed(error) => {
+                                    let end_time = Local::now();
+                                    let duration = end_time.signed_duration_since(start_time);
                                     let _ = pty_tx.send(PtyMessage::Failed {
                                         block_id: block_id.clone(),
                                         error,
+                                        duration,
                                     }).await;
                                     break;
                                 }
                                 CommandStatus::Killed => {
+                                    let end_time = Local::now();
+                                    let duration = end_time.signed_duration_since(start_time);
                                     let _ = pty_tx.send(PtyMessage::Killed {
                                         block_id: block_id.clone(),
+                                        duration,
                                     }).await;
                                     break;
                                 }
@@ -1427,9 +1472,12 @@ impl NeoTerm {
                         }
                     },
                     Err(e) => {
+                        let end_time = Local::now();
+                        let duration = end_time.signed_duration_since(start_time);
                         let _ = pty_tx.send(PtyMessage::Failed {
                             block_id: block_id.clone(),
                             error: format!("Failed to execute command: {}", e),
+                            duration,
                         }).await;
                     }
                 }
@@ -1446,14 +1494,66 @@ impl NeoTerm {
             "This is a next-generation terminal with AI assistance.\nPress 'F1' to run performance benchmarks.\nUse Up/Down arrows for history, Tab for autocomplete.\nType # or /ai followed by your query to ask the AI."
         );
         
-        let sample_command = Block::new_command("$ echo 'Hello, NeoPilot!'".to_string());
-        let mut sample_output = Block::new_output("".to_string());
-        sample_output.add_output_line("Hello, NeoPilot!".to_string(), true);
-        sample_output.set_status("Completed with exit code: 0".to_string());
-        
+        // Simulate Cargo check block
+        let mut cargo_check_block = Block::new_with_background(
+            BlockContent::Command {
+                input: "Cargo check".to_string(),
+                output: vec![
+                    ("Blocking waiting for file lock on build directory".to_string(), true),
+                    ("warning: unused import: `std::iter::FromIterator`".to_string(), true),
+                    ("  --> app/src/channel.rs:2:5".to_string(), true),
+                    ("   |".to_string(), true),
+                    (" 2 | use std::iter::FromIterator;".to_string(), true),
+                    ("   | ^^^^^^^^^^^^^^^^^^^^^^^^^".to_string(), true),
+                    ("   |".to_string(), true),
+                    ("   = note: `#[warn(unused_imports)]` on by default".to_string(), true),
+                    ("".to_string(), true),
+                    ("warning: 1 warning emitted".to_string(), true),
+                    ("".to_string(), true),
+                    ("Finished dev [unoptimized + debuginfo] target(s) in 7.27s".to_string(), true),
+                ],
+                status: "Completed with exit code: 0".to_string(),
+                error: false,
+                start_time: Local::now() - Duration::milliseconds(7270),
+                end_time: Some(Local::now()),
+                working_directory: Some("~/User/zachlloyd/Projects/warp".to_string()),
+            },
+            Color::from_rgb(0.0, 0.2, 0.25), // Teal-like background
+        );
+        cargo_check_block.status = Some("Completed".to_string()); // Override general status for display
+
+        // Simulate git push block
+        let mut git_push_block = Block::new_command(
+            "git push origin zach/war-219-turn-bash-on-in-nightly".to_string(),
+            Some("~/User/zachlloyd/Projects/warp".to_string()),
+        );
+        git_push_block.add_output_line("Enumerating objects: 9, done.".to_string(), true);
+        git_push_block.add_output_line("Counting objects: 100% (9/9), done.".to_string(), true);
+        git_push_block.add_output_line("Delta compression using up to 8 threads".to_string(), true);
+        git_push_block.add_output_line("Compressing objects: 100% (5/5), done.".to_string(), true);
+        git_push_block.add_output_line("Writing objects: 100% (5/5), 495 bytes | 123.00 KiB/s, done.".to_string(), true);
+        git_push_block.add_output_line("Total 5 (delta 4), reused 0 (delta 0), pack-reused 0".to_string(), true);
+        git_push_block.add_output_line("remote: Resolving deltas: 100% (4/4), completed with 4 local objects.".to_string(), true);
+        git_push_block.add_output_line("To github.com:warptdotdev/warp.git".to_string(), true);
+        git_push_block.add_output_line(" 952c468e..55c7c21c  zach/war-219-turn-bash-on-in-nightly -> zach/war-219-turn-bash-on-in-nightly".to_string(), true);
+        git_push_block.set_status("Completed with exit code: 0".to_string());
+        if let BlockContent::Command { end_time, .. } = &mut git_push_block.content {
+            *end_time = Some(Local::now() - Duration::milliseconds(2)); // Simulate a very fast command
+        }
+
+
+        // Simulate docker build block
+        let mut docker_build_block = Block::new_command(
+            "docker build . --tag gcr.io/warp-survey/server-local && ./docker_run.sh".to_string(),
+            Some("~/User/zachlloyd/Projects/warp".to_string()),
+        );
+        docker_build_block.add_output_line("Sending build context to Docker daemon 296.4kB".to_string(), true);
+        docker_build_block.set_status("Running...".to_string()); // Still running
+
         self.blocks.push(welcome_block);
-        self.blocks.push(sample_command);
-        self.blocks.push(sample_output);
+        self.blocks.push(cargo_check_block);
+        self.blocks.push(git_push_block);
+        self.blocks.push(docker_build_block);
     }
 
     /// Creates a subscription for PTY manager events.

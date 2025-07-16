@@ -35,7 +35,7 @@ pub struct UserPreferences {
     #[serde(default)]
     pub workflows: WorkflowPreferences,
     #[serde(default)]
-    pub indexing: IndexingPreferences, // Add IndexingPreferences
+    pub indexing: IndexingPreferences,
 }
 
 impl Default for UserPreferences {
@@ -53,7 +53,7 @@ impl Default for UserPreferences {
             cloud_sync: CloudSyncPreferences::default(),
             drive: DrivePreferences::default(),
             workflows: WorkflowPreferences::default(),
-            indexing: IndexingPreferences::default(), // Default for IndexingPreferences
+            indexing: IndexingPreferences::default(),
         }
     }
 }
@@ -253,6 +253,29 @@ impl Default for KeybindingPreferences {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum AgentPermissionLevel {
+    AgentDecides,
+    Always,
+    Never,
+}
+
+impl Default for AgentPermissionLevel {
+    fn default() -> Self {
+        AgentPermissionLevel::AgentDecides
+    }
+}
+
+impl std::fmt::Display for AgentPermissionLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", match self {
+            AgentPermissionLevel::AgentDecides => "Agent decides",
+            AgentPermissionLevel::Always => "Always",
+            AgentPermissionLevel::Never => "Never",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AiPreferences {
     #[serde(default = "default_ai_provider_type")]
     pub ai_provider_type: String,
@@ -270,6 +293,28 @@ pub struct AiPreferences {
     pub local_only_ai_mode: bool,
     #[serde(default = "default_enable_graphql_api")]
     pub enable_graphql_api: bool,
+
+    // New AI preferences from the image
+    #[serde(default = "default_active_ai_next_command")]
+    pub active_ai_next_command: bool,
+    #[serde(default = "default_active_ai_prompt_suggestions")]
+    pub active_ai_prompt_suggestions: bool,
+    #[serde(default = "default_active_ai_shared_block_title_generation")]
+    pub active_ai_shared_block_title_generation: bool,
+    #[serde(default = "default_base_model")]
+    pub base_model: String,
+    #[serde(default = "default_show_model_picker_in_prompt")]
+    pub show_model_picker_in_prompt: bool,
+    #[serde(default = "default_planning_model")]
+    pub planning_model: String,
+    #[serde(default = "default_permission_apply_code_diffs")]
+    pub permission_apply_code_diffs: AgentPermissionLevel,
+    #[serde(default = "default_permission_read_files")]
+    pub permission_read_files: AgentPermissionLevel,
+    #[serde(default = "default_permission_create_plans")]
+    pub permission_create_plans: AgentPermissionLevel,
+    #[serde(default = "default_permission_execute_commands")]
+    pub permission_execute_commands: AgentPermissionLevel,
 }
 
 impl Default for AiPreferences {
@@ -283,6 +328,16 @@ impl Default for AiPreferences {
             redact_sensitive_info: default_redact_sensitive_info(),
             local_only_ai_mode: default_local_only_ai_mode(),
             enable_graphql_api: default_enable_graphql_api(),
+            active_ai_next_command: default_active_ai_next_command(),
+            active_ai_prompt_suggestions: default_active_ai_prompt_suggestions(),
+            active_ai_shared_block_title_generation: default_active_ai_shared_block_title_generation(),
+            base_model: default_base_model(),
+            show_model_picker_in_prompt: default_show_model_picker_in_prompt(),
+            planning_model: default_planning_model(),
+            permission_apply_code_diffs: default_permission_apply_code_diffs(),
+            permission_read_files: default_permission_read_files(),
+            permission_create_plans: default_permission_create_plans(),
+            permission_execute_commands: default_permission_execute_commands(),
         }
     }
 }
@@ -295,6 +350,18 @@ fn default_fallback_ai_model() -> Option<String> { None }
 fn default_redact_sensitive_info() -> bool { true }
 fn default_local_only_ai_mode() -> bool { false }
 fn default_enable_graphql_api() -> bool { false }
+
+fn default_active_ai_next_command() -> bool { true }
+fn default_active_ai_prompt_suggestions() -> bool { true }
+fn default_active_ai_shared_block_title_generation() -> bool { true }
+fn default_base_model() -> String { "auto (claude 4 sonnet)".to_string() }
+fn default_show_model_picker_in_prompt() -> bool { true }
+fn default_planning_model() -> String { "o3".to_string() }
+fn default_permission_apply_code_diffs() -> AgentPermissionLevel { AgentPermissionLevel::AgentDecides }
+fn default_permission_read_files() -> AgentPermissionLevel { AgentPermissionLevel::AgentDecides }
+fn default_permission_create_plans() -> AgentPermissionLevel { AgentPermissionLevel::Never }
+fn default_permission_execute_commands() -> AgentPermissionLevel { AgentPermissionLevel::AgentDecides }
+
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PrivacyPreferences {
@@ -461,20 +528,16 @@ impl Default for WorkflowPreferences {
 fn default_enable_workflow_suggestions() -> bool { true }
 fn default_workflow_storage_path() -> String { "workflows".to_string() }
 
-// New struct for Indexing Preferences
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IndexingPreferences {
     #[serde(default = "default_index_new_folders_by_default")]
     pub index_new_folders_by_default: bool,
-    // You might add a list of indexed folders here if they are persistent
-    // pub indexed_folders: Vec<String>,
 }
 
 impl Default for IndexingPreferences {
     fn default() -> Self {
         Self {
             index_new_folders_by_default: default_index_new_folders_by_default(),
-            // indexed_folders: Vec::new(),
         }
     }
 }
@@ -514,19 +577,22 @@ mod tests {
         let mut prefs = UserPreferences::load().await.unwrap();
         assert_eq!(prefs.general.font_size, 14);
         assert_eq!(prefs.ui.theme_name, "nord");
-        assert_eq!(prefs.indexing.index_new_folders_by_default, true); // Test new field
+        assert_eq!(prefs.indexing.index_new_folders_by_default, true);
+        assert_eq!(prefs.ai.active_ai_next_command, true); // Test new AI field
 
         // Modify and save
         prefs.general.font_size = 16;
         prefs.ui.theme_name = "dark_mode".to_string();
-        prefs.indexing.index_new_folders_by_default = false; // Modify new field
+        prefs.indexing.index_new_folders_by_default = false;
+        prefs.ai.active_ai_next_command = false; // Modify new AI field
         prefs.save().await.unwrap();
 
         // Load again and verify changes
         let loaded_prefs = UserPreferences::load().await.unwrap();
         assert_eq!(loaded_prefs.general.font_size, 16);
         assert_eq!(loaded_prefs.ui.theme_name, "dark_mode");
-        assert_eq!(loaded_prefs.indexing.index_new_folders_by_default, false); // Verify new field
+        assert_eq!(loaded_prefs.indexing.index_new_folders_by_default, false);
+        assert_eq!(loaded_prefs.ai.active_ai_next_command, false); // Verify new AI field
 
         cleanup_test_env(test_dir).await;
     }
@@ -545,7 +611,18 @@ mod tests {
         assert_eq!(prefs.cloud_sync.sync_interval_minutes, 60);
         assert_eq!(prefs.drive.enable_drive_integration, false);
         assert_eq!(prefs.workflows.enable_workflow_suggestions, true);
-        assert_eq!(prefs.indexing.index_new_folders_by_default, true); // Test new field default
+        assert_eq!(prefs.indexing.index_new_folders_by_default, true);
+        // New AI fields defaults
+        assert_eq!(prefs.ai.active_ai_next_command, true);
+        assert_eq!(prefs.ai.active_ai_prompt_suggestions, true);
+        assert_eq!(prefs.ai.active_ai_shared_block_title_generation, true);
+        assert_eq!(prefs.ai.base_model, "auto (claude 4 sonnet)".to_string());
+        assert_eq!(prefs.ai.show_model_picker_in_prompt, true);
+        assert_eq!(prefs.ai.planning_model, "o3".to_string());
+        assert_eq!(prefs.ai.permission_apply_code_diffs, AgentPermissionLevel::AgentDecides);
+        assert_eq!(prefs.ai.permission_read_files, AgentPermissionLevel::AgentDecides);
+        assert_eq!(prefs.ai.permission_create_plans, AgentPermissionLevel::Never);
+        assert_eq!(prefs.ai.permission_execute_commands, AgentPermissionLevel::AgentDecides);
     }
 
     #[tokio::test]
