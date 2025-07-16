@@ -73,7 +73,7 @@ impl Default for AgentConfig {
 pub struct AgentMode {
     config: AgentConfig,
     enabled: bool,
-    ai_assistant: Arc<RwLock<Assistant>>,
+    pub ai_assistant: Arc<RwLock<Assistant>>,
     ai_context: Arc<AIContext>, // Added AIContext
     message_sender: mpsc::Sender<AgentMessage>,
     message_receiver: mpsc::Receiver<AgentMessage>,
@@ -118,7 +118,7 @@ impl AgentMode {
             role: "user".to_string(),
             content: Some(prompt.clone()),
             tool_calls: None,
-            tool_call_id: None,
+            tool_call_id: None, // This field is now part of the ChatMessage struct in ai/assistant.rs
         });
         drop(ai_assistant_write_guard); // Drop the write guard before spawning the task
 

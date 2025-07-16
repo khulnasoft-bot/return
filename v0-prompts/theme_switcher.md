@@ -28,7 +28,7 @@ Build a responsive, accessible **Theme Switcher UI** using the `Iced` framework.
 - Apply button (if you want confirmation-based selection)
 
 #### Themes:
-```rust
+\`\`\`rust
 enum ThemeVariant {
   Dark,
   Light,

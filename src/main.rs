@@ -101,6 +101,7 @@ use collaboration::session_sharing::CollaborationEvent;
 use workflows::Workflow;
 use serve_wasm::WasmServer; // Import WasmServer
 
+/// The main application state for NeoTerm.
 #[derive(Debug, Clone)]
 pub struct NeoTerm {
    blocks: Vec<Block>,
@@ -154,6 +155,7 @@ pub struct NeoTerm {
    benchmark_results: Option<Vec<BenchmarkResult>>,
 }
 
+/// Messages that can be sent to the `NeoTerm` application.
 #[derive(Debug, Clone)]
 pub enum Message {
    Input(InputMessage),
@@ -189,6 +191,7 @@ pub enum Message {
    UserResponseToAgentPrompt(String, String),
 }
 
+/// Messages related to PTY (Pseudo-Terminal) operations.
 #[derive(Debug, Clone)]
 pub enum PtyMessage {
     OutputChunk {
@@ -209,12 +212,31 @@ pub enum PtyMessage {
     },
 }
 
+/// Messages related to individual UI blocks.
+#[derive(Debug, Clone)]
+pub enum BlockMessage {
+    Rerun,
+    Delete,
+    Copy,
+    Export,
+    ToggleCollapse,
+    SendToAI,
+    SuggestFix,
+    ExplainOutput,
+    AcceptWorkflow,
+    RejectWorkflow,
+    AgentPromptInputChanged(String),
+    SubmitAgentPrompt,
+    FetchUsageQuota,
+}
+
 impl Application for NeoTerm {
     type Message = Message;
     type Theme = Theme;
     type Executor = executor::Default;
     type Flags = ();
 
+    /// Initializes the application state and returns the initial command.
     fn new(_flags: ()) -> (Self, Command<Message>) {
         // Initialize channels for inter-module communication
         let (pty_tx, pty_rx) = mpsc::channel(100);
@@ -393,6 +415,7 @@ impl Application for NeoTerm {
         )
     }
 
+    /// Returns the title of the application window.
     fn title(&self) -> String {
         if self.agent_enabled {
             "NeoTerm - Agent Mode".to_string()
@@ -401,6 +424,7 @@ impl Application for NeoTerm {
         }
     }
 
+    /// Updates the application state based on incoming messages.
     fn update(&mut self, message: Message) -> Command<Message> {
         match message {
             Message::Input(input_message) => {
@@ -571,9 +595,21 @@ impl Application for NeoTerm {
                         self.agent_streaming_rx = None; // Workflow suggestion ends the current AI stream
                     }
                     AgentMessage::AgentPromptRequest { prompt_id, message } => {
-                        let block = Block::new_agent_prompt(prompt_id, message);
-                        self.blocks.push(block);
-                        self.agent_streaming_rx = None; // Agent is waiting for user input
+                        // Find the existing agent prompt block if it exists, or create a new one
+                        if let Some(block) = self.blocks.iter_mut().find(|b| {
+                            if let BlockContent::AgentPrompt { prompt_id: existing_prompt_id, .. } = &b.content {
+                                existing_prompt_id == &prompt_id
+                            } else {
+                                false
+                            }
+                        }) {
+                            if let BlockContent::AgentPrompt { message: ref mut msg, .. } = block.content {
+                                *msg = message; // Update message if needed
+                            }
+                        } else {
+                            let block = Block::new_agent_prompt(prompt_id, message);
+                            self.blocks.push(block);
+                        }
                     }
                     AgentMessage::AgentPromptResponse { .. } => {
                         // This message is handled internally by AgentMode, not displayed directly
@@ -889,6 +925,7 @@ impl NeoTerm {
         }
     }
 
+    /// Handles actions performed on individual UI blocks.
     fn handle_block_action(&mut self, block_id: String, action: BlockMessage) -> Command<Message> {
         if let Some(block_index) = self.blocks.iter().position(|b| b.id == block_id) {
             let block = &mut self.blocks[block_index];
@@ -943,27 +980,35 @@ impl NeoTerm {
                 }
                 BlockMessage::SendToAI => {
                     let block_to_send = block.clone();
-                    let prompt = format!("Please analyze the following block:\n{}", match &block_to_send.content {
-                        BlockContent::Command { input, output, status, error, .. } => {
-                            format!("Command: `{}`\nOutput:\n\`\`\`\n{}\n\`\`\`\nStatus: {}\nError: {}", input, output.iter().map(|(s, _)| s.clone()).join("\n"), status, error)
+                    let user_prompt_for_ai = "Please analyze the provided context."; // A generic prompt
+                    
+                    // Add a user message block to the UI to indicate AI interaction
+                    let user_block = Block::new_user_message(format!("AI: Analyze block #{}", &block_to_send.id[0..8]));
+                    self.blocks.push(user_block);
+
+                    let agent_mode_arc_clone = self.agent_mode.clone();
+                    let (tx, rx) = mpsc::channel(100);
+                    self.agent_streaming_rx = Some(rx);
+
+                    // Send the generic prompt and the specific block as context
+                    return Command::perform(
+                        async move {
+                            let mut agent_mode = agent_mode_arc_clone.write().await;
+                            match agent_mode.send_message(user_prompt_for_ai.to_string(), vec![block_to_send]).await {
+                                Ok(mut stream_rx) => {
+                                    while let Some(msg) = stream_rx.recv().await {
+                                        if tx.send(msg).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(AgentMessage::Error(format!("Failed to send message to agent: {}", e))).await;
+                                }
+                            }
                         },
-                        BlockContent::AgentMessage { content, is_user, .. } => {
-                            format!("{}: {}", if *is_user { "User" } else { "Agent" }, content)
-                        },
-                        BlockContent::Info { title, message, .. } => {
-                            format!("Info ({}): {}", title, message)
-                        },
-                        BlockContent::Error { message, .. } => {
-                            format!("Error: {}", message)
-                        },
-                        BlockContent::WorkflowSuggestion { workflow } => {
-                            format!("Workflow Suggestion: {}\nDescription: {}\nSteps: {:#?}", workflow.name, workflow.description.as_deref().unwrap_or(""), workflow.steps)
-                        },
-                        BlockContent::AgentPrompt { message, .. } => {
-                            format!("Agent Prompt: {}", message)
-                        },
-                    });
-                    self.handle_ai_command(prompt, Some(block_id.clone()))
+                        |_| Message::Tick
+                    );
                 }
                 BlockMessage::SuggestFix => {
                     if let BlockContent::Command { input, output, status, error, .. } = &block.content {
