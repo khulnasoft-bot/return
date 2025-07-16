@@ -1,44 +1,82 @@
-use crate::ai::providers::{AIProvider, ChatMessage, OpenAIProvider, OllamaProvider, AnthropicProvider};
+use crate::ai::providers::{AIProvider, OpenAIProvider, OllamaProvider, AnthropicProvider};
 use crate::ai::prompts::PromptBuilder;
-use crate::ai::context::AIContext; // Import AIContext
+use crate::ai::context::AIContext;
+use crate::ai::{ChatMessage, ToolCall, ToolFunction}; // Import from parent module
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use serde_json::Value;
-use crate::workflows::Workflow; // Import Workflow struct
-use regex::Regex; // For redaction
+use crate::workflows::Workflow;
+use regex::Regex;
 use crate::command::CommandManager;
 use crate::virtual_fs::VirtualFileSystem;
 use crate::watcher::Watcher;
 use crate::config::preferences::AiPreferences;
 use crate::plugins::plugin_manager::PluginManager;
-use serde::{Deserialize, Serialize}; // Added for ChatMessage and ToolCall derives
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use crate::block::{Block, BlockContent}; // Import actual Block and BlockContent from block.rs
+use crate::block::{Block, BlockContent};
+use log::error; // Import error macro
 
-/// Represents a chat message, including its role, content, and any associated tool calls.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatMessage {
-   pub role: String,
-   pub content: Option<String>,
-   pub tool_calls: Option<Vec<ToolCall>>,
-   pub tool_call_id: Option<String>, // Added this field
+/// Trait defining the interface for an AI tool.
+#[async_trait::async_trait] // Add async_trait macro for async trait methods
+pub trait Tool: Send + Sync { // Add Send + Sync bounds
+   fn name(&self) -> String;
+   fn description(&self) -> String;
+   async fn execute(&self, arguments: String) -> Result<String>; // Make execute async
 }
 
-/// Represents a tool call made by the AI.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCall {
-   pub name: String,
-   pub arguments: String,
+/// Manages the registration and retrieval of AI tools.
+pub struct ToolManager {
+   tools: HashMap<String, Box<dyn Tool + Send + Sync>>,
+}
+
+impl ToolManager {
+   /// Creates a new `ToolManager`.
+   pub fn new() -> Self {
+       Self {
+           tools: HashMap::new(),
+       }
+   }
+
+   /// Registers a new tool with the manager.
+   ///
+   /// # Arguments
+   ///
+   /// * `tool` - The tool to register.
+   pub fn register_tool(&mut self, tool: Box<dyn Tool + Send + Sync>) {
+       self.tools.insert(tool.name(), tool);
+   }
+
+   /// Retrieves a tool by its name.
+   ///
+   /// # Arguments
+   ///
+   /// * `name` - The name of the tool to retrieve.
+   pub fn get_tool(&self, name: &str) -> Option<&dyn Tool> {
+       self.tools.get(name).map(|tool| tool.as_ref())
+   }
+
+   /// Lists the names of all registered tools.
+   pub fn list_tools(&self) -> Vec<String> {
+       self.tools.keys().cloned().collect()
+   }
 }
 
 /// Messages that the AI agent can send.
+#[derive(Debug, Clone)]
 pub enum AgentMessage {
    AgentResponse(String),
-   ToolCall(ToolCall),
+   ToolCall(ToolCall), // Now uses the consolidated ToolCall
+   ToolResult(String), // For tool output
    SystemMessage(String),
    Done,
+   Error(String),
+   WorkflowSuggested(Workflow),
+   AgentPromptRequest { prompt_id: String, message: String },
+   AgentPromptResponse { prompt_id: String, response: String },
+   UserMessage(String), // Added for consistency in AgentMode
 }
 
 /// The main AI assistant responsible for interacting with AI providers and managing conversation history.
@@ -154,7 +192,8 @@ impl Assistant {
 
    /// Sends a message to the AI and receives a stream of `AgentMessage`s.
    ///
-   /// This method is used by `AgentMode` to communicate with the AI.
+   /// This method is used by `AgentMode` to communicate with the AI. It handles
+   /// accumulating streamed text and tool call arguments for real-time display.
    ///
    /// # Arguments
    ///
@@ -166,7 +205,7 @@ impl Assistant {
        let (tx, rx) = mpsc::channel(100);
 
        let system_prompt = PromptBuilder::new().build_general_chat_prompt();
-       let context = self.ai_context.read().await.get_full_context().await; // Use the injected AIContext
+       let context = self.ai_context.read().await.get_full_context().await;
 
        let mut messages = vec![
            ChatMessage { role: "system".to_string(), content: Some(system_prompt), tool_calls: None, tool_call_id: None },
@@ -176,9 +215,9 @@ impl Assistant {
        for block in context_blocks {
            let block_content = match block.content {
                BlockContent::Command { input, output, status, error, .. } => {
-                   format!("Command: `{}`\nOutput:\n\`\`\`\n{}\n\`\`\`\nStatus: {}\nError: {}", input, output.iter().map(|(s, _)| s.clone()).collect::<Vec<String>>().join("\n"), status, error)
+                   format!("Command: `{}`\nOutput:\n```\n{}\n```\nStatus: {}\nError: {}", input, output.iter().map(|(s, _)| s.clone()).collect::<Vec<String>>().join("\n"), status, error)
                },
-               BlockContent::AgentMessage { content, is_user, .. } => { // Corrected from AgentContent
+               BlockContent::AgentMessage { content, is_user, .. } => {
                    format!("{}: {}", if is_user { "User" } else { "Agent" }, content)
                },
                BlockContent::Info { title, message, .. } => {
@@ -193,11 +232,14 @@ impl Assistant {
                BlockContent::AgentPrompt { message, .. } => {
                    format!("Agent Prompt: {}", message)
                },
+               BlockContent::StreamingToolCall { id, name, arguments } => { // Handle new type
+                   format!("Streaming Tool Call (ID: {}): {}\nArguments: {}", id, name, arguments)
+               }
            };
            messages.push(ChatMessage { role: "system".to_string(), content: Some(block_content), tool_calls: None, tool_call_id: None });
        }
 
-       messages.extend(self.conversation_history.iter().cloned()); // Add conversation history
+       messages.extend(self.conversation_history.iter().cloned());
        messages.push(ChatMessage { role: "user".to_string(), content: Some(format!("{}\n\nContext:\n{}", prompt, context)), tool_calls: None, tool_call_id: None });
 
        let ai_provider = if self.local_only_ai_mode {
@@ -206,34 +248,43 @@ impl Assistant {
            &self.ai_provider
        };
 
-       let mut stream = ai_provider.stream_chat(messages).await?;
+       let mut stream = ai_provider.stream_chat_completion(messages, None).await?;
 
        tokio::spawn(async move {
            while let Some(chunk) = stream.recv().await {
-               // Convert generic ChatMessage to AgentMessage
-               let agent_message = match chunk.role.as_str() {
-                   "assistant" => AgentMessage::AgentResponse(chunk.content.unwrap_or_default()),
+               match chunk.role.as_str() {
+                   "assistant" => {
+                       if let Some(content) = chunk.content {
+                           if tx.send(AgentMessage::AgentResponse(content)).await.is_err() {
+                               error!("Failed to send agent response message.");
+                               break;
+                           }
+                       }
+                   },
                    "tool_calls" => {
                        if let Some(tool_calls) = chunk.tool_calls {
-                           // Assuming ToolCall in assistant.rs is the same as AgentToolCall in agent_mode_eval
                            for tool_call in tool_calls {
-                               // This will only send the last tool call if there are multiple in one chunk
-                               // A more robust solution would be to send a vector of tool calls or iterate and send
-                               return if tx.send(AgentMessage::ToolCall(ToolCall { name: tool_call.name, arguments: tool_call.arguments })).await.is_err() {
+                               if tx.send(AgentMessage::ToolCall(tool_call)).await.is_err() {
                                    error!("Failed to send tool call message.");
-                                   return;
-                               };
+                                   break;
+                               }
                            }
-                           continue;
-                       } else {
-                           AgentMessage::Error("Tool call with no arguments".to_string())
+                       }
+                   },
+                   "tool" => { // This role is for tool results, not tool calls
+                       if let Some(content) = chunk.content {
+                           if tx.send(AgentMessage::ToolResult(content)).await.is_err() {
+                               error!("Failed to send tool result message.");
+                               break;
+                           }
                        }
                    }
-                   _ => AgentMessage::SystemMessage(format!("Unknown role: {}", chunk.role)),
-               };
-
-               if tx.send(agent_message).await.is_err() {
-                   break;
+                   _ => {
+                       if tx.send(AgentMessage::SystemMessage(format!("Unknown role: {}", chunk.role))).await.is_err() {
+                           error!("Failed to send system message for unknown role.");
+                           break;
+                       }
+                   },
                }
            }
            // Signal completion
@@ -300,7 +351,7 @@ impl Assistant {
    pub async fn explain_output(&mut self, command_input: &str, output_content: &str, error_message: Option<&str>) -> Result<String> {
        let system_prompt = PromptBuilder::new().build_explanation_prompt();
        let context = self.ai_context.read().await.get_full_context().await; // Use the injected AIContext
-       let mut user_prompt = format!("Command: `{}`\nOutput:\n\`\`\`\n{}\n\`\`\`", command_input, output_content);
+       let mut user_prompt = format!("Command: `{}`\nOutput:\n```\n{}\n```", command_input, output_content);
        if let Some(err) = error_message {
            user_prompt.push_str(&format!("\nError: {}", err));
        }
@@ -364,51 +415,6 @@ impl Assistant {
            &self.ai_provider
        };
        ai_provider.get_usage_quota().await
-   }
-}
-
-/// Trait defining the interface for an AI tool.
-#[async_trait::async_trait] // Add async_trait macro for async trait methods
-pub trait Tool: Send + Sync { // Add Send + Sync bounds
-   fn name(&self) -> String;
-   fn description(&self) -> String;
-   async fn execute(&self, arguments: String) -> Result<String>; // Make execute async
-}
-
-/// Manages the registration and retrieval of AI tools.
-pub struct ToolManager {
-   tools: HashMap<String, Box<dyn Tool + Send + Sync>>,
-}
-
-impl ToolManager {
-   /// Creates a new `ToolManager`.
-   pub fn new() -> Self {
-       Self {
-           tools: HashMap::new(),
-       }
-   }
-
-   /// Registers a new tool with the manager.
-   ///
-   /// # Arguments
-   ///
-   /// * `tool` - The tool to register.
-   pub fn register_tool(&mut self, tool: Box<dyn Tool + Send + Sync>) {
-       self.tools.insert(tool.name(), tool);
-   }
-
-   /// Retrieves a tool by its name.
-   ///
-   /// # Arguments
-   ///
-   /// * `name` - The name of the tool to retrieve.
-   pub fn get_tool(&self, name: &str) -> Option<&dyn Tool> {
-       self.tools.get(name).map(|tool| tool.as_ref())
-   }
-
-   /// Lists the names of all registered tools.
-   pub fn list_tools(&self) -> Vec<String> {
-       self.tools.keys().cloned().collect()
    }
 }
 

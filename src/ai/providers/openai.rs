@@ -1,4 +1,5 @@
-use super::{AIProvider, ChatMessage};
+use super::{AIProvider};
+use crate::ai::{ChatMessage, ToolCall, ToolFunction}; // Import from crate::ai
 use async_trait::async_trait;
 use anyhow::{Result, anyhow};
 use reqwest::{Client, Error as ReqwestError};
@@ -6,7 +7,7 @@ use tokio::sync::mpsc;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap; // For current_tool_calls
+use std::collections::HashMap;
 use log::info;
 
 #[derive(Debug, Clone)]
@@ -77,7 +78,7 @@ impl AIProvider for OpenAIProvider {
         let tool_calls = if message["tool_calls"].is_array() {
             let mut calls = Vec::new();
             for tc_val in message["tool_calls"].as_array().unwrap() {
-                if let Ok(tool_call) = serde_json::from_value::<super::ToolCall>(tc_val.clone()) {
+                if let Ok(tool_call) = serde_json::from_value::<ToolCall>(tc_val.clone()) {
                     calls.push(tool_call);
                 }
             }
@@ -116,7 +117,7 @@ impl AIProvider for OpenAIProvider {
                 Ok(response) => {
                     let mut stream = response.bytes_stream();
                     let mut current_content = String::new();
-                    let mut current_tool_calls: HashMap<String, super::ToolCall> = HashMap::new();
+                    let mut current_tool_calls: HashMap<String, ToolCall> = HashMap::new();
 
                     while let Some(chunk_result) = stream.next().await {
                         match chunk_result {
@@ -146,15 +147,14 @@ impl AIProvider for OpenAIProvider {
                                                     
                                                     if let Some(tool_calls_array) = delta["tool_calls"].as_array() {
                                                         for tool_call_delta in tool_calls_array {
-                                                            let index = tool_call_delta["index"].as_u64().unwrap_or(0) as usize;
                                                             let id = tool_call_delta["id"].as_str().unwrap_or_default().to_string();
                                                             let name = tool_call_delta["function"]["name"].as_str().unwrap_or_default().to_string();
                                                             let arguments_chunk = tool_call_delta["function"]["arguments"].as_str().unwrap_or_default().to_string();
 
-                                                            let entry = current_tool_calls.entry(id.clone()).or_insert_with(|| super::ToolCall {
+                                                            let entry = current_tool_calls.entry(id.clone()).or_insert_with(|| ToolCall {
                                                                 id: id.clone(),
                                                                 type_: "function".to_string(),
-                                                                function: super::ToolFunction {
+                                                                function: ToolFunction {
                                                                     name: name.clone(),
                                                                     arguments: Value::String("".to_string()),
                                                                 },
@@ -225,11 +225,11 @@ impl AIProvider for OpenAIProvider {
 
         // Mock streaming implementation
         tokio::spawn(async move {
-            tx.send(ChatMessage { role: "assistant".to_string(), content: Some("OpenAI streaming response (mock) - part 1".to_string()), tool_calls: None }).await.unwrap();
+            tx.send(ChatMessage { role: "assistant".to_string(), content: Some("OpenAI streaming response (mock) - part 1".to_string()), tool_calls: None, tool_call_id: None }).await.unwrap();
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-            tx.send(ChatMessage { role: "assistant".to_string(), content: Some("OpenAI streaming response (mock) - part 2".to_string()), tool_calls: None }).await.unwrap();
+            tx.send(ChatMessage { role: "assistant".to_string(), content: Some("OpenAI streaming response (mock) - part 2".to_string()), tool_calls: None, tool_call_id: None }).await.unwrap();
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-            tx.send(ChatMessage { role: "assistant".to_string(), content: Some("OpenAI streaming response (mock) - part 3".to_string()), tool_calls: None }).await.unwrap();
+            tx.send(ChatMessage { role: "assistant".to_string(), content: Some("OpenAI streaming response (mock) - part 3".to_string()), tool_calls: None, tool_call_id: None }).await.unwrap();
         });
 
         Ok(rx)

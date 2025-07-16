@@ -18,6 +18,7 @@ use clap::Parser;
 use anyhow::Result;
 use log::{error, info};
 use itertools::Itertools; // For .join() on iterators
+use serde_json::Value; // For parsing tool call arguments
 
 // Import modules
 mod ai;
@@ -122,6 +123,8 @@ pub struct NeoTerm {
     agent_enabled: bool,
     /// Receiver for streaming messages from the AI agent.
     agent_streaming_rx: Option<mpsc::Receiver<AgentMessage>>,
+    /// Map from AI tool_call_id to UI block_id for streaming tool calls.
+    streaming_tool_call_blocks: HashMap<String, String>,
     
     // Configuration
     /// The current application configuration.
@@ -465,8 +468,8 @@ impl Application for NeoTerm {
             workflow_event_rx,
             config_manager,
             ai_assistant,
-            ai_context, // Assign AIContext
-            workflow_manager: Arc::new(WorkflowManager::new()), // Initialized here
+            ai_context,
+            workflow_manager: Arc::new(WorkflowManager::new()),
             plugin_manager,
             sync_manager,
             collaboration_manager,
@@ -491,6 +494,7 @@ impl Application for NeoTerm {
             wasm_server,
             preferences,
             benchmark_results: None,
+            streaming_tool_call_blocks: HashMap::new(), // Initialize new field
         };
 
         neo_term.add_sample_blocks();
@@ -661,11 +665,45 @@ impl Application for NeoTerm {
                         }
                     }
                     AgentMessage::ToolCall(tool_call) => {
-                        let block = Block::new_info(
-                            format!("AI Tool Call: {}", tool_call.name),
-                            format!("Arguments: {}", tool_call.arguments.to_string())
-                        );
-                        self.blocks.push(block);
+                        let tool_call_id = tool_call.id.clone();
+                        let arguments_str = tool_call.function.arguments.to_string(); // Convert Value to string for display
+
+                        if let Some(block_id) = self.streaming_tool_call_blocks.get(&tool_call_id) {
+                            // Update existing streaming tool call block
+                            if let Some(block) = self.blocks.iter_mut().find(|b| b.id == *block_id) {
+                                if let BlockContent::StreamingToolCall { arguments: ref mut current_args, .. } = block.content {
+                                    // Update arguments. A more robust solution might parse JSON and merge.
+                                    *current_args = arguments_str;
+                                    block.set_status(format!("Streaming Tool Call: {}", tool_call.function.name));
+                                }
+                            }
+                        } else {
+                            // Create a new streaming tool call block
+                            let mut new_block = Block::new_streaming_tool_call(
+                                tool_call_id.clone(),
+                                tool_call.function.name.clone(),
+                                arguments_str.clone(),
+                            );
+                            let new_block_id = new_block.id.clone();
+                            self.blocks.push(new_block);
+                            self.streaming_tool_call_blocks.insert(tool_call_id.clone(), new_block_id);
+                        }
+
+                        // Check if arguments are complete (e.g., valid JSON object/array)
+                        // This is a heuristic to determine if streaming for this tool call is done.
+                        if tool_call.function.arguments.is_object() || tool_call.function.arguments.is_array() {
+                            if let Some(block_id) = self.streaming_tool_call_blocks.remove(&tool_call_id) {
+                                if let Some(block) = self.blocks.iter_mut().find(|b| b.id == block_id) {
+                                    // Transition to a regular Info block
+                                    block.content = BlockContent::Info {
+                                        title: format!("AI Tool Call: {}", tool_call.function.name),
+                                        message: format!("Arguments: {}", tool_call.function.arguments.to_string()),
+                                        timestamp: Local::now(),
+                                    };
+                                    block.set_status("Tool Call Completed".to_string());
+                                }
+                            }
+                        }
                     }
                     AgentMessage::ToolResult(result) => {
                         let block = Block::new_info(
@@ -684,6 +722,8 @@ impl Application for NeoTerm {
                                 last_block.set_status("Completed".to_string());
                             }
                         }
+                        // Clear any remaining streaming tool call blocks if the stream ends
+                        self.streaming_tool_call_blocks.clear();
                         self.agent_streaming_rx = None; // Mark stream as ended
                     }
                     AgentMessage::WorkflowSuggested(workflow) => {
@@ -717,12 +757,14 @@ impl Application for NeoTerm {
             }
             Message::AgentStreamEnded => {
                 self.agent_streaming_rx = None;
+                self.streaming_tool_call_blocks.clear(); // Ensure cleanup
                 Command::none()
             }
             Message::AgentError(error) => {
                 let block = Block::new_error(format!("Agent error: {}", error));
                 self.blocks.push(block);
                 self.agent_streaming_rx = None;
+                self.streaming_tool_call_blocks.clear(); // Ensure cleanup
                 Command::none()
             }
             Message::CommandGenerated(generated_command) => {
@@ -1096,6 +1138,7 @@ impl NeoTerm {
                         BlockContent::Error { message, .. } => message.clone(),
                         BlockContent::WorkflowSuggestion { workflow } => format!("{:#?}", workflow),
                         BlockContent::AgentPrompt { message, .. } => message.clone(),
+                        BlockContent::StreamingToolCall { name, arguments, .. } => format!("Tool Call: {}\nArguments: {}", name, arguments),
                     };
                     log::info!("Mock Copy: Copied content to clipboard (not actually implemented): {}", content_to_copy);
                     // In a real app, you'd use a platform-specific clipboard API
@@ -1112,6 +1155,7 @@ impl NeoTerm {
                         BlockContent::Error { message, .. } => message.clone(),
                         BlockContent::WorkflowSuggestion { workflow } => format!("{:#?}", workflow),
                         BlockContent::AgentPrompt { message, .. } => message.clone(),
+                        BlockContent::StreamingToolCall { name, arguments, .. } => format!("Tool Call: {}\nArguments: {}", name, arguments),
                     };
                     log::info!("Mock Export: Exported content (not actually implemented):\n{}", export_content);
                     // In a real app, you'd open a save dialog or write to a file
@@ -1355,7 +1399,7 @@ impl NeoTerm {
                                         let _ = pty_tx.send(PtyMessage::OutputChunk {
                                             block_id: block_id.clone(),
                                             content: output.stderr,
-                                            is_stderr: false,
+                                            is_stdout: false, // Corrected from is_stderr: false
                                         }).await;
                                     }
                                 }

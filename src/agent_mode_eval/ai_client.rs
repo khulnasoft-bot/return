@@ -2,19 +2,8 @@ use anyhow::{Result, anyhow};
 use tokio::sync::mpsc;
 use log::info;
 use serde::{Serialize, Deserialize};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatMessage {
-    pub role: String,
-    pub content: Option<String>,
-    pub tool_calls: Option<Vec<ToolCall>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCall {
-    pub name: String,
-    pub arguments: String,
-}
+use crate::ai::{ChatMessage, ToolCall}; // Import from crate::ai
+use crate::config::preferences::AiConfig; // Assuming AiConfig is defined here or accessible
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AIStreamChunk {
@@ -61,6 +50,10 @@ impl AIClient for OpenAIClient {
             tx.send(AIStreamChunk::Text("OpenAI streaming response (mock) - part 2".to_string())).await.unwrap();
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             tx.send(AIStreamChunk::Text("OpenAI streaming response (mock) - part 3".to_string())).await.unwrap();
+            // Mock tool call streaming
+            tx.send(AIStreamChunk::ToolCall { name: "mock_tool".to_string(), arguments: r#"{"param":"value"}"#.to_string() }).await.unwrap();
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            tx.send(AIStreamChunk::Done).await.unwrap();
         });
 
         Ok(rx)
@@ -69,8 +62,8 @@ impl AIClient for OpenAIClient {
     async fn get_conversation_history(&self) -> Vec<ChatMessage> {
         // Mock implementation
         vec![
-            ChatMessage { role: "user".to_string(), content: Some("Hello, AI!".to_string()), tool_calls: None },
-            ChatMessage { role: "assistant".to_string(), content: Some("Hello, User!".to_string()), tool_calls: None },
+            ChatMessage { role: "user".to_string(), content: Some("Hello, AI!".to_string()), tool_calls: None, tool_call_id: None },
+            ChatMessage { role: "assistant".to_string(), content: Some("Hello, User!".to_string()), tool_calls: None, tool_call_id: None },
         ]
     }
 }
@@ -78,5 +71,3 @@ impl AIClient for OpenAIClient {
 pub fn init() {
     info!("agent_mode_eval/ai_client module loaded");
 }
-
-// This file was left out for brevity. Assume it is correct and does not need any modifications.

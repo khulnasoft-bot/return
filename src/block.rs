@@ -46,6 +46,12 @@ pub enum BlockContent {
         message: String,
         input_value: String, // Current value in the input field for this prompt
     },
+    /// Represents a tool call whose arguments are being streamed.
+    StreamingToolCall {
+        id: String, // The tool_call_id from the AI
+        name: String,
+        arguments: String, // Accumulate arguments as a string
+    },
     // Add other block types as needed (e.g., Code, Image, Workflow)
 }
 
@@ -164,10 +170,32 @@ impl Block {
         }
     }
 
+    /// Creates a new streaming tool call block.
+    /// The `block_id` is a new UUID for the UI element, while `tool_call_id` is the AI's ID for the tool call.
+    pub fn new_streaming_tool_call(tool_call_id: String, name: String, initial_arguments: String) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(), // Use a new block ID for the UI block
+            content: BlockContent::StreamingToolCall {
+                id: tool_call_id, // This is the tool_call_id from the AI
+                name,
+                arguments: initial_arguments,
+            },
+            collapsed: false,
+            status: Some("Streaming Tool Call...".to_string()),
+        }
+    }
+
     /// Adds a line of output to a command block.
     pub fn add_output_line(&mut self, line: String, is_stdout: bool) {
         if let BlockContent::Command { output, .. } = &mut self.content {
             output.push((line, is_stdout));
+        }
+    }
+
+    /// Updates the arguments of a streaming tool call block.
+    pub fn update_streaming_tool_call_arguments(&mut self, new_arguments: String) {
+        if let BlockContent::StreamingToolCall { arguments, .. } = &mut self.content {
+            *arguments = new_arguments;
         }
     }
 
@@ -179,7 +207,8 @@ impl Block {
                 *end_time = Some(Local::now());
             },
             BlockContent::AgentMessage { .. } | BlockContent::Info { .. } | BlockContent::Error { .. } |
-            BlockContent::WorkflowSuggestion { .. } | BlockContent::AgentPrompt { .. } => {
+            BlockContent::WorkflowSuggestion { .. } | BlockContent::AgentPrompt { .. } |
+            BlockContent::StreamingToolCall { .. } => {
                 // For other block types, update the general status field
             }
         }
@@ -288,6 +317,12 @@ impl Block {
                         text(message.lines().next().unwrap_or("...")).size(16), // Show only first line
                     ].spacing(10).into()
                 }
+                BlockContent::StreamingToolCall { name, arguments, .. } => {
+                    row![
+                        text(format!("Tool Call: {}", name)).size(16).color(Color::from_rgb(0.8, 0.5, 0.0)),
+                        text(arguments.lines().next().unwrap_or("...")).size(14),
+                    ].spacing(10).into()
+                }
             }
         } else {
             // Expanded view: show full content
@@ -361,6 +396,14 @@ impl Block {
                         // Submit button for the prompt
                         button(text("Submit"))
                             .on_press(crate::Message::BlockAction(self.id.clone(), crate::main::BlockMessage::SubmitAgentPrompt)),
+                    ].spacing(5).into()
+                }
+                BlockContent::StreamingToolCall { id, name, arguments } => {
+                    column![
+                        text(format!("Streaming Tool Call (ID: {})", id)).size(18).color(Color::from_rgb(0.8, 0.5, 0.0)),
+                        text(format!("Function: {}", name)).size(16),
+                        text("Arguments:").size(14).color(Color::from_rgb(0.5, 0.5, 0.5)),
+                        scrollable(text(arguments.clone()).size(14)).height(Length::Shrink).width(Length::Fill),
                     ].spacing(5).into()
                 }
             }
